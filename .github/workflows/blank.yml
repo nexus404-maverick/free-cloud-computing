@@ -38,9 +38,15 @@ jobs:
           Write-Host "Workflow: $env:GITHUB_WORKFLOW" -ForegroundColor Yellow
 
           Write-Host "`n=== SYSTEM SPECIFICATIONS ===" -ForegroundColor Cyan
-          Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsArchitecture
-          Get-CimInstance Win32_ComputerSystem | Select-Object TotalPhysicalMemory
-          Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors
+
+          Get-ComputerInfo |
+            Select-Object WindowsProductName, WindowsVersion, OsArchitecture
+
+          Get-CimInstance Win32_ComputerSystem |
+            Select-Object TotalPhysicalMemory
+
+          Get-CimInstance Win32_Processor |
+            Select-Object Name, NumberOfCores, NumberOfLogicalProcessors
 
           Write-Host "`n=== NODE INFORMATION ===" -ForegroundColor Cyan
           node --version
@@ -56,13 +62,16 @@ jobs:
 
           Set-ItemProperty `
             -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-            -Name 'fDenyTSConnections' -Value 0
+            -Name 'fDenyTSConnections' `
+            -Value 0
 
           Set-ItemProperty `
             -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name 'UserAuthentication' -Value 1
+            -Name 'UserAuthentication' `
+            -Value 1
 
           Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'
+
           Write-Host "Remote Desktop enabled." -ForegroundColor Green
 
       # ============================================================
@@ -77,8 +86,12 @@ jobs:
           $User = Get-LocalUser -Name "runneradmin" -ErrorAction SilentlyContinue
 
           if ($null -eq $User) {
-              New-LocalUser -Name "runneradmin" -Password $Password `
-                -PasswordNeverExpires -AccountNeverExpires
+              New-LocalUser `
+                -Name "runneradmin" `
+                -Password $Password `
+                -PasswordNeverExpires `
+                -AccountNeverExpires
+
               Write-Host "User runneradmin created." -ForegroundColor Green
           }
           else {
@@ -86,8 +99,10 @@ jobs:
               Write-Host "User runneradmin already exists; password updated." -ForegroundColor Yellow
           }
 
-          Add-LocalGroupMember -Group "Remote Desktop Users" `
-            -Member "runneradmin" -ErrorAction SilentlyContinue
+          Add-LocalGroupMember `
+            -Group "Remote Desktop Users" `
+            -Member "runneradmin" `
+            -ErrorAction SilentlyContinue
 
           Write-Host "Username: runneradmin" -ForegroundColor Yellow
           Write-Host "Password: P@ssw0rd!" -ForegroundColor Yellow
@@ -106,19 +121,40 @@ jobs:
           Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
 
           Write-Host "Installing Tailscale..." -ForegroundColor Green
-          Start-Process -FilePath "msiexec.exe" `
+
+          Start-Process `
+            -FilePath "msiexec.exe" `
             -ArgumentList "/i `"$installerPath`" /quiet /norestart" `
-            -Wait -NoNewWindow
+            -Wait `
+            -NoNewWindow
 
           Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
 
           $tailscale = "C:\Program Files\Tailscale\tailscale.exe"
+
           if (-not (Test-Path $tailscale)) {
               Write-Error "Tailscale executable was not found."
               exit 1
           }
 
           & $tailscale version
+
+      # ============================================================
+      # DEBUG SECRET CHECK
+      # ============================================================
+      - name: Debug Secret Check
+        shell: powershell
+        env:
+          TS_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          Write-Host "=== DEBUG SECRET ===" -ForegroundColor Cyan
+          if ([string]::IsNullOrEmpty($env:TS_AUTH_KEY)) {
+              Write-Host "TS_AUTH_KEY is EMPTY" -ForegroundColor Red
+          }
+          else {
+              Write-Host "TS_AUTH_KEY is SET" -ForegroundColor Green
+              Write-Host "Length: $($env:TS_AUTH_KEY.Length) characters" -ForegroundColor Green
+          }
 
       # ============================================================
       # START TAILSCALE
@@ -129,16 +165,19 @@ jobs:
           TS_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
           Write-Host "Starting Tailscale..." -ForegroundColor Green
+
           $tailscale = "C:\Program Files\Tailscale\tailscale.exe"
 
-          if (-not $env:TS_AUTH_KEY) {
+          if ([string]::IsNullOrEmpty($env:TS_AUTH_KEY)) {
               Write-Error "TAILSCALE_AUTH_KEY secret is empty or not configured."
               exit 1
           }
 
           $hostname = "enigmano-${{ github.run_id }}"
 
-          & $tailscale up --auth-key="$env:TS_AUTH_KEY" --hostname="$hostname"
+          & $tailscale up `
+            --auth-key="$env:TS_AUTH_KEY" `
+            --hostname="$hostname"
 
           if ($LASTEXITCODE -ne 0) {
               Write-Error "Tailscale failed to start. Exit code: $LASTEXITCODE"
@@ -146,6 +185,7 @@ jobs:
           }
 
           Start-Sleep -Seconds 10
+
           Write-Host "Tailscale started successfully." -ForegroundColor Green
 
       # ============================================================
@@ -155,15 +195,18 @@ jobs:
         shell: powershell
         run: |
           $tailscale = "C:\Program Files\Tailscale\tailscale.exe"
+
           Write-Host "Getting Tailscale IPv4 address..." -ForegroundColor Green
 
           $tsIP = (& $tailscale ip -4 | Select-Object -First 1).Trim()
+
           if (-not $tsIP) {
               Write-Error "Unable to obtain Tailscale IPv4 address."
               exit 1
           }
 
           Write-Host "Tailscale IP: $tsIP" -ForegroundColor Green
+
           "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
       # ============================================================
@@ -173,16 +216,22 @@ jobs:
         shell: powershell
         run: |
           Write-Host "Downloading Google Chrome..." -ForegroundColor Green
+
           $chromeUrl = "https://dl.google.com/chrome/install/latest/chrome_installer.exe"
           $installerPath = "$env:TEMP\chrome_installer.exe"
 
           Invoke-WebRequest -Uri $chromeUrl -OutFile $installerPath
 
           Write-Host "Installing Google Chrome..." -ForegroundColor Green
-          Start-Process -FilePath $installerPath `
-            -ArgumentList "/silent /install" -Wait -NoNewWindow
+
+          Start-Process `
+            -FilePath $installerPath `
+            -ArgumentList "/silent /install" `
+            -Wait `
+            -NoNewWindow
 
           Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+
           Write-Host "Google Chrome installed." -ForegroundColor Green
 
       # ============================================================
@@ -192,15 +241,22 @@ jobs:
         shell: powershell
         run: |
           Write-Host "Downloading 7-Zip..." -ForegroundColor Green
+
           $zipUrl = "https://www.7-zip.org/a/7z2409-x64.exe"
           $installerPath = "$env:TEMP\7z-installer.exe"
 
           Invoke-WebRequest -Uri $zipUrl -OutFile $installerPath
 
           Write-Host "Installing 7-Zip..." -ForegroundColor Green
-          Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait -NoNewWindow
+
+          Start-Process `
+            -FilePath $installerPath `
+            -ArgumentList "/S" `
+            -Wait `
+            -NoNewWindow
 
           Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+
           Write-Host "7-Zip installed." -ForegroundColor Green
 
       # ============================================================
@@ -210,6 +266,7 @@ jobs:
         shell: powershell
         run: |
           Write-Host "`n=== CONNECTION DETAILS (TAILSCALE) ===" -ForegroundColor Green
+
           Write-Host "========================================" -ForegroundColor Cyan
           Write-Host "          ENIGMANO RDP ACCESS           " -ForegroundColor Cyan
           Write-Host "========================================" -ForegroundColor Cyan
@@ -218,6 +275,13 @@ jobs:
           Write-Host "Password: P@ssw0rd!" -ForegroundColor White
           Write-Host "========================================" -ForegroundColor Cyan
 
+          Write-Host "`nConnection Instructions:" -ForegroundColor Yellow
+          Write-Host "1. Connect your device to the same Tailscale network." -ForegroundColor White
+          Write-Host "2. Open an RDP client." -ForegroundColor White
+          Write-Host "3. Enter the Tailscale IP shown above." -ForegroundColor White
+          Write-Host "4. Username: runneradmin" -ForegroundColor White
+          Write-Host "5. Enter the configured password." -ForegroundColor White
+
       # ============================================================
       # KEEP SESSION ALIVE / AUTO RESTART AFTER 5 HOURS
       # ============================================================
@@ -225,7 +289,7 @@ jobs:
         shell: powershell
         env:
           TS_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
-          GH_TOKEN: ${{ secrets.GH_PAT }}        # ⚠️ BẮT BUỘC phải là GH_PAT, không phải GITHUB_TOKEN
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           # --------------------------------------------------------
           # CẤU HÌNH
@@ -257,10 +321,8 @@ jobs:
           function Start-NewWorkflow {
               Write-Banner "5 HOURS REACHED - Starting a new workflow instance..." "Yellow"
 
-              # Kiểm tra GH_TOKEN
-              if (-not $env:GH_TOKEN) {
+              if ([string]::IsNullOrEmpty($env:GH_TOKEN)) {
                   Write-Error "GH_TOKEN is not set! Cannot dispatch new workflow."
-                  Write-Error "Check that secrets.GH_PAT exists in repository settings."
                   exit 1
               }
 
@@ -270,7 +332,6 @@ jobs:
               Write-Host "  Ref:      $ref" -ForegroundColor Gray
               Write-Host "  Instance: $instance" -ForegroundColor Gray
 
-              # Retry tối đa 3 lần
               $maxRetries = 3
               $success = $false
 
@@ -304,10 +365,11 @@ jobs:
               Write-Host ""
               Write-Host "New workflow dispatched successfully." -ForegroundColor Green
               Write-Host "Instance: $instance" -ForegroundColor Cyan
-
               Write-Host ""
               Write-Host "Stopping current 5-hour session..." -ForegroundColor Yellow
+
               & $tailscale down 2>$null
+
               Write-Host "Current workflow finished." -ForegroundColor Green
           }
 
@@ -347,9 +409,8 @@ jobs:
           Write-Host "Maximum session: 5 hours"         -ForegroundColor Yellow
           Write-Host "========================================" -ForegroundColor DarkCyan
 
-          if (-not $env:GH_TOKEN) {
-              Write-Host "⚠️  WARNING: GH_TOKEN is not set. Auto-restart will fail!" -ForegroundColor Red
-              Write-Host "    Please add secret named 'GH_PAT' in repository settings." -ForegroundColor Yellow
+          if ([string]::IsNullOrEmpty($env:GH_TOKEN)) {
+              Write-Host "WARNING: GH_TOKEN is not set. Auto-restart will fail!" -ForegroundColor Red
           }
 
           # --------------------------------------------------------
@@ -362,19 +423,15 @@ jobs:
 
               Write-Banner "Heartbeat #$counter - $now" "Green"
 
-              # === Kiểm tra deadline 5 giờ ===
               if ($now -ge $restartAfter) {
                   Start-NewWorkflow
                   exit 0
               }
 
-              # === Hiển thị thời gian còn lại ===
               $remaining = $restartAfter - $now
               Write-Host ("Time remaining: {0:hh\:mm\:ss}" -f $remaining) -ForegroundColor Yellow
 
-              # === Kiểm tra Tailscale ===
               Test-Tailscale
 
-              # === Nghỉ ===
               Start-Sleep -Seconds $sleepSeconds
           }
