@@ -120,7 +120,7 @@ jobs:
           & $tailscale version
 
       # ============================================================
-      # ⭐ GENERATE NEW TAILSCALE AUTH KEY QUA OAUTH
+      # GENERATE NEW TAILSCALE AUTH KEY (qua OAuth)
       # ============================================================
       - name: Generate New Tailscale Auth Key
         shell: powershell
@@ -128,38 +128,50 @@ jobs:
           TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           TS_OAUTH_SECRET:    ${{ secrets.TS_OAUTH_SECRET }}
         run: |
-          Write-Host "=== GENERATING NEW TAILSCALE AUTH KEY ===" -ForegroundColor Cyan
+          $ErrorActionPreference = "Stop"
 
-          if ([string]::IsNullOrEmpty($env:TS_OAUTH_CLIENT_ID) -or `
-              [string]::IsNullOrEmpty($env:TS_OAUTH_SECRET)) {
-              Write-Error "TS_OAUTH_CLIENT_ID or TS_OAUTH_SECRET is missing."
+          Write-Host "=== 1. KIEM TRA SECRETS ===" -ForegroundColor Cyan
+          if ([string]::IsNullOrEmpty($env:TS_OAUTH_CLIENT_ID)) {
+              Write-Host "LOI: TS_OAUTH_CLIENT_ID bi rong!" -ForegroundColor Red
               exit 1
           }
+          if ([string]::IsNullOrEmpty($env:TS_OAUTH_SECRET)) {
+              Write-Host "LOI: TS_OAUTH_SECRET bi rong!" -ForegroundColor Red
+              exit 1
+          }
+          Write-Host "Secrets OK." -ForegroundColor Green
+          Write-Host "Client ID (5 ky tu dau): $($env:TS_OAUTH_CLIENT_ID.Substring(0, [Math]::Min(5, $env:TS_OAUTH_CLIENT_ID.Length)))..." -ForegroundColor Gray
+          Write-Host "Secret prefix: $($env:TS_OAUTH_SECRET.Substring(0, [Math]::Min(13, $env:TS_OAUTH_SECRET.Length)))..." -ForegroundColor Gray
 
-          # ----- Bước 1: Đổi OAuth credentials lấy access token -----
+          Write-Host "`n=== 2. LAY OAUTH ACCESS TOKEN ===" -ForegroundColor Cyan
           $tokenBody = @{
               client_id     = $env:TS_OAUTH_CLIENT_ID
               client_secret = $env:TS_OAUTH_SECRET
           }
 
-          Write-Host "Requesting OAuth access token..." -ForegroundColor Yellow
-
-          $tokenResp = Invoke-RestMethod `
-              -Uri "https://api.tailscale.com/api/v2/oauth/token" `
-              -Method Post `
-              -Body $tokenBody `
-              -ContentType "application/x-www-form-urlencoded"
-
-          $accessToken = $tokenResp.access_token
-
-          if ([string]::IsNullOrEmpty($accessToken)) {
-              Write-Error "Failed to obtain OAuth access token."
+          try {
+              $tokenResp = Invoke-RestMethod `
+                  -Uri "https://api.tailscale.com/api/v2/oauth/token" `
+                  -Method Post `
+                  -Body $tokenBody `
+                  -ContentType "application/x-www-form-urlencoded"
+              Write-Host "Lay access token thanh cong." -ForegroundColor Green
+          }
+          catch {
+              Write-Host "LOI KHI LAY TOKEN:" -ForegroundColor Red
+              Write-Host $_.Exception.Message -ForegroundColor Yellow
+              if ($_.ErrorDetails.Message) { Write-Host $_.ErrorDetails.Message -ForegroundColor Yellow }
               exit 1
           }
 
-          Write-Host "OAuth access token obtained." -ForegroundColor Green
+          $accessToken = $tokenResp.access_token
+          if ([string]::IsNullOrEmpty($accessToken)) {
+              Write-Host "LOI: access_token rong." -ForegroundColor Red
+              exit 1
+          }
+          Write-Host "Access Token OK." -ForegroundColor Green
 
-          # ----- Bước 2: Tạo auth key mới (ephemeral, sống 1 giờ) -----
+          Write-Host "`n=== 3. TAO AUTH KEY MOI ===" -ForegroundColor Cyan
           $keyBody = @{
               capabilities = @{
                   devices = @{
@@ -175,31 +187,35 @@ jobs:
               description   = "enigmano-run-${{ github.run_id }}"
           } | ConvertTo-Json -Depth 10
 
-          Write-Host "Creating new auth key..." -ForegroundColor Yellow
-
           $headers = @{
               "Authorization" = "Bearer $accessToken"
               "Content-Type"  = "application/json"
           }
 
-          $keyResp = Invoke-RestMethod `
-              -Uri "https://api.tailscale.com/api/v2/tailnet/-/keys" `
-              -Method Post `
-              -Headers $headers `
-              -Body $keyBody
-
-          $newAuthKey = $keyResp.key
-
-          if ([string]::IsNullOrEmpty($newAuthKey)) {
-              Write-Error "Failed to create new auth key."
+          try {
+              $keyResp = Invoke-RestMethod `
+                  -Uri "https://api.tailscale.com/api/v2/tailnet/-/keys" `
+                  -Method Post `
+                  -Headers $headers `
+                  -Body $keyBody
+              Write-Host "Tao auth key thanh cong." -ForegroundColor Green
+          }
+          catch {
+              Write-Host "LOI KHI TAO KEY:" -ForegroundColor Red
+              Write-Host "Status: $($_.Exception.Response.StatusCode)" -ForegroundColor Yellow
+              if ($_.ErrorDetails.Message) { Write-Host "Chi tiet: $($_.ErrorDetails.Message)" -ForegroundColor Yellow }
               exit 1
           }
 
-          Write-Host "New auth key created successfully." -ForegroundColor Green
+          $newAuthKey = $keyResp.key
+          if ([string]::IsNullOrEmpty($newAuthKey)) {
+              Write-Host "LOI: key rong." -ForegroundColor Red
+              exit 1
+          }
+
           Write-Host "Key ID:      $($keyResp.id)" -ForegroundColor Cyan
           Write-Host "Key expires: $($keyResp.expires)" -ForegroundColor Cyan
 
-          # ----- Bước 3: Lưu key vào biến môi trường cho step sau -----
           "TS_NEW_AUTH_KEY=$newAuthKey" >> $env:GITHUB_ENV
           "TS_NEW_KEY_ID=$($keyResp.id)" >> $env:GITHUB_ENV
 
@@ -231,7 +247,6 @@ jobs:
           }
 
           Start-Sleep -Seconds 10
-
           Write-Host "Tailscale started successfully." -ForegroundColor Green
 
       # ============================================================
@@ -314,7 +329,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           # --------------------------------------------------------
-          # CẤU HÌNH
+          # CAU HINH
           # --------------------------------------------------------
           $tailscale     = "C:\Program Files\Tailscale\tailscale.exe"
           $instance      = "${{ github.event.inputs.instance_number }}"
@@ -372,7 +387,6 @@ jobs:
 
               Write-Host "`nNew workflow dispatched." -ForegroundColor Green
 
-              # Logout + down để device cũ tự remove
               Write-Host "`nLogging out Tailscale..." -ForegroundColor Yellow
               & $tailscale logout 2>$null
               Start-Sleep -Seconds 3
