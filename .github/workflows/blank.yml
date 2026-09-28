@@ -97,6 +97,10 @@ jobs:
               exit 1
           }
           Write-Host "Secrets OK." -ForegroundColor Green
+          Write-Host "Client ID length: $($env:TS_OAUTH_CLIENT_ID.Length)"
+          Write-Host "Client ID first 5: $($env:TS_OAUTH_CLIENT_ID.Substring(0,5))"
+          Write-Host "Secret length: $($env:TS_OAUTH_SECRET.Length)"
+          Write-Host "Secret first 13: $($env:TS_OAUTH_SECRET.Substring(0,13))"
 
           Write-Host "`n=== 2. LAY OAUTH ACCESS TOKEN ===" -ForegroundColor Cyan
           $tokenBody = @{
@@ -257,32 +261,49 @@ jobs:
 
           function Start-NewWorkflow {
               Write-Banner "5 HOURS REACHED - Starting a new workflow instance..." "Yellow"
+
               if ([string]::IsNullOrEmpty($env:GH_TOKEN)) {
                   Write-Error "GH_TOKEN is not set!"
                   exit 1
               }
+
+              # Delay 5s để GitHub refresh secret cache
+              Write-Host "Waiting 5 seconds for secret cache refresh..." -ForegroundColor Yellow
+              Start-Sleep -Seconds 5
+
               Write-Host "Dispatching new workflow..." -ForegroundColor Cyan
+              Write-Host "  Workflow: $workflow" -ForegroundColor Gray
+              Write-Host "  Instance: $instance" -ForegroundColor Gray
+
               $maxRetries = 3
               $success = $false
+
               for ($i = 1; $i -le $maxRetries; $i++) {
                   Write-Host "`nAttempt $i of $maxRetries..." -ForegroundColor Yellow
+
                   gh workflow run $workflow --repo $repo --ref $ref -f "instance_number=$instance"
+
                   if ($LASTEXITCODE -eq 0) {
                       $success = $true
                       break
                   }
+
                   Write-Host "Attempt $i failed." -ForegroundColor Red
-                  if ($i -lt $maxRetries) { Start-Sleep -Seconds 10 }
+                  if ($i -lt $maxRetries) { Start-Sleep -Seconds 15 }
               }
+
               if (-not $success) {
                   Write-Error "Failed to dispatch new workflow."
                   exit 1
               }
-              Write-Host "`nNew workflow dispatched." -ForegroundColor Green
+
+              Write-Host "`nNew workflow dispatched successfully." -ForegroundColor Green
+
               Write-Host "`nLogging out Tailscale..." -ForegroundColor Yellow
               & $tailscale logout 2>$null
               Start-Sleep -Seconds 3
               & $tailscale down 2>$null
+
               Write-Host "Cleanup complete." -ForegroundColor Green
           }
 
