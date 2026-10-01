@@ -48,7 +48,7 @@ jobs:
           TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
         run: |
-          # Lấy OAuth token
+          # Lấy OAuth access token
           TOKEN=$(curl -s -X POST "https://api.tailscale.com/api/v2/oauth/token" \
             -d "client_id=$TS_OAUTH_CLIENT_ID" \
             -d "client_secret=$TS_OAUTH_SECRET" \
@@ -59,7 +59,7 @@ jobs:
             exit 1
           fi
 
-          # Tạo auth key
+          # Tạo auth key mới
           KEY=$(curl -s -X POST "https://api.tailscale.com/api/v2/tailnet/-/keys" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
@@ -78,6 +78,11 @@ jobs:
               "description": "linux-vnc-${{ github.run_id }}"
             }' | jq -r '.key')
 
+          if [ -z "$KEY" ] || [ "$KEY" = "null" ]; then
+            echo "Failed to create auth key"
+            exit 1
+          fi
+
           echo "Auth key obtained"
           echo "::add-mask::$KEY"
 
@@ -91,28 +96,31 @@ jobs:
           echo "Tailscale IP: $(tailscale ip -4)"
 
       # ============================================================
-      # INSTALL VNC + DESKTOP ENVIRONMENT
+      # INSTALL VNC + DESKTOP ENVIRONMENT (TigerVNC)
       # ============================================================
       - name: Install VNC + XFCE
         run: |
           sudo apt update
           sudo apt install -y \
-            tightvncserver \
+            tigervnc-standalone-server \
+            tigervnc-common \
+            tigervnc-tools \
             xfce4 \
             xfce4-goodies \
             xterm \
-            firefox \
             dbus-x11
 
           echo "VNC + XFCE installed"
+          echo "Check tigervncserver: $(which tigervncserver)"
+          echo "Check tigervncpasswd: $(which tigervncpasswd)"
 
       - name: Setup VNC Password
         run: |
           mkdir -p ~/.vnc
-          echo "linuxvnc" | vncpasswd -f > ~/.vnc/passwd
+          echo "linuxvnc" | tigervncpasswd -f > ~/.vnc/passwd
           chmod 600 ~/.vnc/passwd
 
-          # Tạo file startup VNC
+          # Tạo file startup cho VNC
           cat > ~/.vnc/xstartup << 'EOF'
           #!/bin/sh
           unset SESSION_MANAGER
@@ -124,11 +132,11 @@ jobs:
 
       - name: Start VNC Server
         run: |
-          vncserver :1 -geometry 1280x720 -depth 24
+          tigervncserver :1 -geometry 1280x720 -depth 24 -localhost no
           sleep 5
 
           echo "=== VNC STATUS ==="
-          vncserver -list
+          tigervncserver -list
           ss -tlnp | grep 5901 || netstat -tlnp | grep 5901
 
       # ============================================================
@@ -173,10 +181,10 @@ jobs:
           while [ $(date +%s) -lt $END_TIME ]; do
             REMAINING=$((END_TIME - $(date +%s)))
 
-            # Kiểm tra VNC còn chạy
-            if ! pgrep -f "Xtightvnc" > /dev/null; then
+            # Kiểm tra VNC còn chạy không
+            if ! pgrep -f "Xtigervnc" > /dev/null; then
               echo "VNC died! Restarting..."
-              vncserver :1 -geometry 1280x720 -depth 24
+              tigervncserver :1 -geometry 1280x720 -depth 24 -localhost no
             fi
 
             echo "$(date -u +%H:%M:%S) - Remaining: $(($REMAINING / 60))m $(($REMAINING % 60))s - Tailscale: $(tailscale ip -4 2>/dev/null | head -1)"
@@ -185,6 +193,6 @@ jobs:
           done
 
           echo "Duration reached. Stopping VNC..."
-          vncserver -kill :1 || true
+          tigervncserver -kill :1 || true
           sudo tailscale down || true
           echo "Session ended."
