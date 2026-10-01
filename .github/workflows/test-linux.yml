@@ -1,0 +1,190 @@
+name: Test Linux VNC
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration_minutes:
+        description: 'Duration (minutes)'
+        required: true
+        default: '60'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  linux-vnc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # ============================================================
+      # SYSTEM INFO
+      # ============================================================
+      - name: System Info
+        run: |
+          echo "=== SYSTEM INFO ==="
+          uname -a
+          cat /etc/os-release
+          echo ""
+          echo "CPU: $(nproc) cores"
+          echo "RAM: $(free -h | grep Mem | awk '{print $2}')"
+          echo "Disk: $(df -h / | tail -1 | awk '{print $4}') available"
+
+      # ============================================================
+      # INSTALL TAILSCALE
+      # ============================================================
+      - name: Install Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+          echo "Tailscale installed"
+          tailscale version
+
+      - name: Start Tailscale
+        env:
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+        run: |
+          # Lấy OAuth token
+          TOKEN=$(curl -s -X POST "https://api.tailscale.com/api/v2/oauth/token" \
+            -d "client_id=$TS_OAUTH_CLIENT_ID" \
+            -d "client_secret=$TS_OAUTH_SECRET" \
+            | jq -r '.access_token')
+
+          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+            echo "Failed to get OAuth token"
+            exit 1
+          fi
+
+          # Tạo auth key
+          KEY=$(curl -s -X POST "https://api.tailscale.com/api/v2/tailnet/-/keys" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "capabilities": {
+                "devices": {
+                  "create": {
+                    "reusable": true,
+                    "ephemeral": true,
+                    "preauthorized": true,
+                    "tags": ["tag:github-runner"]
+                  }
+                }
+              },
+              "expirySeconds": 3600,
+              "description": "linux-vnc-${{ github.run_id }}"
+            }' | jq -r '.key')
+
+          echo "Auth key obtained"
+          echo "::add-mask::$KEY"
+
+          # Start Tailscale
+          sudo tailscale up \
+            --auth-key="$KEY" \
+            --hostname="linux-vnc-${{ github.run_id }}" \
+            --advertise-tags="tag:github-runner"
+
+          sleep 10
+          echo "Tailscale IP: $(tailscale ip -4)"
+
+      # ============================================================
+      # INSTALL VNC + DESKTOP ENVIRONMENT
+      # ============================================================
+      - name: Install VNC + XFCE
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            tightvncserver \
+            xfce4 \
+            xfce4-goodies \
+            xterm \
+            firefox \
+            dbus-x11
+
+          echo "VNC + XFCE installed"
+
+      - name: Setup VNC Password
+        run: |
+          mkdir -p ~/.vnc
+          echo "linuxvnc" | vncpasswd -f > ~/.vnc/passwd
+          chmod 600 ~/.vnc/passwd
+
+          # Tạo file startup VNC
+          cat > ~/.vnc/xstartup << 'EOF'
+          #!/bin/sh
+          unset SESSION_MANAGER
+          unset DBUS_SESSION_BUS_ADDRESS
+          startxfce4 &
+          EOF
+
+          chmod +x ~/.vnc/xstartup
+
+      - name: Start VNC Server
+        run: |
+          vncserver :1 -geometry 1280x720 -depth 24
+          sleep 5
+
+          echo "=== VNC STATUS ==="
+          vncserver -list
+          ss -tlnp | grep 5901 || netstat -tlnp | grep 5901
+
+      # ============================================================
+      # CONNECTION DETAILS
+      # ============================================================
+      - name: Connection Details
+        run: |
+          TS_IP=$(tailscale ip -4 | head -1)
+
+          echo ""
+          echo "========================================"
+          echo "     LINUX VNC ACCESS"
+          echo "========================================"
+          echo "Host:     $TS_IP"
+          echo "Port:     5901"
+          echo "Username: (no username — VNC)"
+          echo "Password: linuxvnc"
+          echo "========================================"
+          echo ""
+          echo "Connect via:"
+          echo "  - VNC Viewer (RealVNC/TigerVNC)"
+          echo "  - Termux: vncviewer $TS_IP:5901"
+          echo "  - Any VNC client"
+          echo ""
+          echo "Format for VNC client:"
+          echo "  $TS_IP:5901"
+          echo "  or"
+          echo "  $TS_IP:1"
+          echo ""
+
+      # ============================================================
+      # KEEP SESSION ALIVE
+      # ============================================================
+      - name: Keep Session Alive
+        run: |
+          DURATION=${{ github.event.inputs.duration_minutes }}
+          echo "Keeping session alive for $DURATION minutes..."
+          echo "Session started: $(date -u)"
+
+          END_TIME=$(($(date +%s) + DURATION * 60))
+
+          while [ $(date +%s) -lt $END_TIME ]; do
+            REMAINING=$((END_TIME - $(date +%s)))
+
+            # Kiểm tra VNC còn chạy
+            if ! pgrep -f "Xtightvnc" > /dev/null; then
+              echo "VNC died! Restarting..."
+              vncserver :1 -geometry 1280x720 -depth 24
+            fi
+
+            echo "$(date -u +%H:%M:%S) - Remaining: $(($REMAINING / 60))m $(($REMAINING % 60))s - Tailscale: $(tailscale ip -4 2>/dev/null | head -1)"
+
+            sleep 60
+          done
+
+          echo "Duration reached. Stopping VNC..."
+          vncserver -kill :1 || true
+          sudo tailscale down || true
+          echo "Session ended."
