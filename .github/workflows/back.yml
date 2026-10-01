@@ -1,0 +1,75 @@
+name: Backup Workflow Trigger
+
+on:
+  workflow_dispatch:
+    inputs:
+      instance_number:
+        description: 'Instance Number (1-10)'
+        required: true
+        default: '1'
+        type: string
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  trigger-main:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Wait 10 Minutes
+        shell: bash
+        run: |
+          echo "=== BACKUP WORKFLOW STARTED ==="
+          echo "Waiting 10 minutes before triggering main workflow..."
+          echo "Current time: $(date -u)"
+          sleep 600
+          echo "Wait complete. Current time: $(date -u)"
+
+      - name: Trigger Main Workflow
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          echo "=== TRIGGERING MAIN WORKFLOW ==="
+
+          INSTANCE="${{ github.event.inputs.instance_number }}"
+          REPO="${{ github.repository }}"
+          REF="${{ github.ref_name }}"
+
+          echo "Repo:     $REPO"
+          echo "Ref:      $REF"
+          echo "Instance: $INSTANCE"
+
+          MAX_RETRIES=3
+          SUCCESS=false
+
+          for i in $(seq 1 $MAX_RETRIES); do
+            echo ""
+            echo "Attempt $i of $MAX_RETRIES..."
+
+            if gh workflow run main.yml \
+                --repo "$REPO" \
+                --ref "$REF" \
+                -f "instance_number=$INSTANCE"; then
+              SUCCESS=true
+              break
+            fi
+
+            echo "Attempt $i failed."
+            if [ $i -lt $MAX_RETRIES ]; then
+              echo "Waiting 15s before retry..."
+              sleep 15
+            fi
+          done
+
+          if [ "$SUCCESS" = "true" ]; then
+            echo ""
+            echo "*** MAIN WORKFLOW TRIGGERED SUCCESSFULLY ***"
+          else
+            echo ""
+            echo "*** FAILED TO TRIGGER MAIN WORKFLOW ***"
+            exit 1
+          fi
