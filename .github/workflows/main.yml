@@ -119,7 +119,6 @@ jobs:
           }
 
           "TS_NEW_AUTH_KEY=$($keyResp.key)" >> $env:GITHUB_ENV
-        shell-exit-on-error: true
 
       - name: Start Tailscale
         shell: powershell
