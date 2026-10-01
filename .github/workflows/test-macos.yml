@@ -1,0 +1,158 @@
+name: Test macOS VNC
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration_minutes:
+        description: 'Duration (minutes) - max 20'
+        required: true
+        default: '15'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  macos-vnc:
+    runs-on: macos-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # ============================================================
+      # SYSTEM INFO
+      # ============================================================
+      - name: System Info
+        run: |
+          echo "=== macOS INFO ==="
+          sw_vers
+          uname -a
+          echo ""
+          echo "CPU: $(sysctl -n hw.ncpu) cores"
+          echo "RAM: $(( $(sysctl -n hw.memsize) / 1024 / 1024 / 1024 )) GB"
+
+      # ============================================================
+      # INSTALL TAILSCALE
+      # ============================================================
+      - name: Install Tailscale
+        run: |
+          brew install --cask tailscale
+          sudo /Applications/Tailscale.app/Contents/MacOS/Tailscale version
+
+      - name: Start Tailscale
+        env:
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+        run: |
+          # Lấy OAuth token
+          TOKEN=$(curl -s -X POST "https://api.tailscale.com/api/v2/oauth/token" \
+            -d "client_id=$TS_OAUTH_CLIENT_ID" \
+            -d "client_secret=$TS_OAUTH_SECRET" \
+            | jq -r '.access_token')
+
+          KEY=$(curl -s -X POST "https://api.tailscale.com/api/v2/tailnet/-/keys" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "capabilities": {
+                "devices": {
+                  "create": {
+                    "reusable": true,
+                    "ephemeral": true,
+                    "preauthorized": true,
+                    "tags": ["tag:github-runner"]
+                  }
+                }
+              },
+              "expirySeconds": 3600,
+              "description": "macos-vnc-${{ github.run_id }}"
+            }' | jq -r '.key')
+
+          echo "::add-mask::$KEY"
+
+          sudo /Applications/Tailscale.app/Contents/MacOS/Tailscale up \
+            --auth-key="$KEY" \
+            --hostname="macos-vnc-${{ github.run_id }}" \
+            --advertise-tags="tag:github-runner"
+
+          sleep 10
+          echo "Tailscale IP: $(/Applications/Tailscale.app/Contents/MacOS/Tailscale ip -4)"
+
+      # ============================================================
+      # ENABLE SCREEN SHARING (VNC)
+      # ============================================================
+      - name: Set VNC Password
+        run: |
+          # Set password cho Screen Sharing
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -configure -clientopts -setvnclegacy -vnclegacy yes
+
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -configure -clientopts -setvncpw -vncpw macvnc
+
+          echo "VNC password set: macvnc"
+
+      - name: Enable Screen Sharing
+        run: |
+          # Enable Screen Sharing (VNC)
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -activate -configure -access -on \
+            -restart -agent -privs -all
+
+          echo "Screen Sharing enabled"
+
+          # Verify
+          sudo launchctl list | grep -i screensharing || echo "Screensharing service check"
+
+      - name: Verify VNC Port
+        run: |
+          sleep 3
+          sudo lsof -i :5900 || echo "Port 5900 status"
+          netstat -an | grep 5900 || echo "No 5900 in netstat"
+
+      # ============================================================
+      # CONNECTION DETAILS
+      # ============================================================
+      - name: Connection Details
+        run: |
+          TS_IP=$(/Applications/Tailscale.app/Contents/MacOS/Tailscale ip -4 | head -1)
+
+          echo ""
+          echo "========================================"
+          echo "     MACOS VNC ACCESS"
+          echo "========================================"
+          echo "Host:     $TS_IP"
+          echo "Port:     5900"
+          echo "Username: (no username — VNC)"
+          echo "Password: macvnc"
+          echo "========================================"
+          echo ""
+          echo "Connect via:"
+          echo "  - VNC Viewer"
+          echo "  - macOS Screen Sharing (Finder → Go → Connect to Server)"
+          echo "  - Termux: vncviewer $TS_IP:5900"
+          echo ""
+
+      # ============================================================
+      # KEEP SESSION ALIVE
+      # ============================================================
+      - name: Keep Session Alive
+        run: |
+          DURATION=${{ github.event.inputs.duration_minutes }}
+          echo "Keeping session alive for $DURATION minutes..."
+
+          END_TIME=$(($(date +%s) + DURATION * 60))
+
+          while [ $(date +%s) -lt $END_TIME ]; do
+            REMAINING=$((END_TIME - $(date +%s)))
+
+            echo "$(date -u +%H:%M:%S) - Remaining: $(($REMAINING / 60))m - Tailscale: $(/Applications/Tailscale.app/Contents/MacOS/Tailscale ip -4 2>/dev/null | head -1)"
+
+            sleep 60
+          done
+
+          echo "Duration reached. Stopping..."
+          sudo /Applications/Tailscale.app/Contents/MacOS/Tailscale down || true
+          echo "Session ended."
