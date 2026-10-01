@@ -21,26 +21,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      # ============================================================
-      # SYSTEM INFO
-      # ============================================================
       - name: System Info
         run: |
           echo "=== SYSTEM INFO ==="
           uname -a
           cat /etc/os-release
-          echo ""
           echo "CPU: $(nproc) cores"
           echo "RAM: $(free -h | grep Mem | awk '{print $2}')"
-          echo "Disk: $(df -h / | tail -1 | awk '{print $4}') available"
 
-      # ============================================================
-      # INSTALL TAILSCALE
-      # ============================================================
       - name: Install Tailscale
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
-          echo "Tailscale installed"
           tailscale version
 
       - name: Start Tailscale
@@ -48,7 +39,6 @@ jobs:
           TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
         run: |
-          # Lấy OAuth access token
           TOKEN=$(curl -s -X POST "https://api.tailscale.com/api/v2/oauth/token" \
             -d "client_id=$TS_OAUTH_CLIENT_ID" \
             -d "client_secret=$TS_OAUTH_SECRET" \
@@ -59,7 +49,6 @@ jobs:
             exit 1
           fi
 
-          # Tạo auth key mới
           KEY=$(curl -s -X POST "https://api.tailscale.com/api/v2/tailnet/-/keys" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
@@ -83,10 +72,8 @@ jobs:
             exit 1
           fi
 
-          echo "Auth key obtained"
           echo "::add-mask::$KEY"
 
-          # Start Tailscale
           sudo tailscale up \
             --auth-key="$KEY" \
             --hostname="linux-vnc-${{ github.run_id }}" \
@@ -96,7 +83,7 @@ jobs:
           echo "Tailscale IP: $(tailscale ip -4)"
 
       # ============================================================
-      # INSTALL VNC + DESKTOP ENVIRONMENT (TigerVNC)
+      # INSTALL VNC + XFCE (full packages)
       # ============================================================
       - name: Install VNC + XFCE
         run: |
@@ -106,42 +93,67 @@ jobs:
             tigervnc-common \
             tigervnc-tools \
             xfce4 \
-            xfce4-goodies \
+            xfce4-session \
+            xfce4-panel \
+            xfwm4 \
+            xfce4-terminal \
             xterm \
-            dbus-x11
+            dbus-x11 \
+            x11-xserver-utils
 
-          echo "VNC + XFCE installed"
-          echo "Check tigervncserver: $(which tigervncserver)"
-          echo "Check tigervncpasswd: $(which tigervncpasswd)"
+          echo "Installed:"
+          which tigervncserver
+          which tigervncpasswd
+          which startxfce4
+          which dbus-launch
 
-      - name: Setup VNC Password
+      - name: Setup VNC Password + Xstartup
         run: |
           mkdir -p ~/.vnc
           echo "linuxvnc" | tigervncpasswd -f > ~/.vnc/passwd
           chmod 600 ~/.vnc/passwd
 
-          # Tạo file startup cho VNC
+          # xstartup với dbus-launch (quan trọng!)
           cat > ~/.vnc/xstartup << 'EOF'
           #!/bin/sh
           unset SESSION_MANAGER
           unset DBUS_SESSION_BUS_ADDRESS
-          startxfce4 &
+          export XDG_CURRENT_DESKTOP=XFCE
+          export XDG_SESSION_TYPE=x11
+          exec dbus-launch --exit-with-session startxfce4
           EOF
 
           chmod +x ~/.vnc/xstartup
 
+          echo "=== xstartup content ==="
+          cat ~/.vnc/xstartup
+
       - name: Start VNC Server
         run: |
-          tigervncserver :1 -geometry 1280x720 -depth 24 -localhost no
-          sleep 5
+          # Tạo .Xauthority
+          touch ~/.Xauthority
+
+          tigervncserver :1 \
+            -geometry 1280x720 \
+            -depth 24 \
+            -localhost no \
+            -xstartup ~/.vnc/xstartup
+
+          # Đợi VNC + XFCE khởi động
+          sleep 15
 
           echo "=== VNC STATUS ==="
           tigervncserver -list
           ss -tlnp | grep 5901 || netstat -tlnp | grep 5901
 
-      # ============================================================
-      # CONNECTION DETAILS
-      # ============================================================
+          echo ""
+          echo "=== VNC LOG (last 30 lines) ==="
+          tail -30 ~/.vnc/*.log 2>/dev/null || echo "No log found"
+
+          echo ""
+          echo "=== XFCE PROCESSES ==="
+          ps aux | grep -E "xfce|Xvnc|Xtigervnc" | grep -v grep || echo "No XFCE process"
+
       - name: Connection Details
         run: |
           TS_IP=$(tailscale ip -4 | head -1)
@@ -159,17 +171,8 @@ jobs:
           echo "Connect via:"
           echo "  - VNC Viewer (RealVNC/TigerVNC)"
           echo "  - Termux: vncviewer $TS_IP:5901"
-          echo "  - Any VNC client"
-          echo ""
-          echo "Format for VNC client:"
-          echo "  $TS_IP:5901"
-          echo "  or"
-          echo "  $TS_IP:1"
           echo ""
 
-      # ============================================================
-      # KEEP SESSION ALIVE
-      # ============================================================
       - name: Keep Session Alive
         run: |
           DURATION=${{ github.event.inputs.duration_minutes }}
@@ -181,13 +184,18 @@ jobs:
           while [ $(date +%s) -lt $END_TIME ]; do
             REMAINING=$((END_TIME - $(date +%s)))
 
-            # Kiểm tra VNC còn chạy không
+            # Kiểm tra VNC còn sống
             if ! pgrep -f "Xtigervnc" > /dev/null; then
               echo "VNC died! Restarting..."
-              tigervncserver :1 -geometry 1280x720 -depth 24 -localhost no
+              touch ~/.Xauthority
+              tigervncserver :1 \
+                -geometry 1280x720 \
+                -depth 24 \
+                -localhost no \
+                -xstartup ~/.vnc/xstartup
             fi
 
-            echo "$(date -u +%H:%M:%S) - Remaining: $(($REMAINING / 60))m $(($REMAINING % 60))s - Tailscale: $(tailscale ip -4 2>/dev/null | head -1)"
+            echo "$(date -u +%H:%M:%S) - Remaining: $(($REMAINING / 60))m $(($REMAINING % 60))s - IP: $(tailscale ip -4 2>/dev/null | head -1)"
 
             sleep 60
           done
