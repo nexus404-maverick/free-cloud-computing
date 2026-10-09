@@ -27,8 +27,6 @@ jobs:
         run: |
           Write-Host "=== LAYER7 STORE RDP ===" -ForegroundColor Green
           Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsArchitecture
-          Get-CimInstance Win32_ComputerSystem | Select-Object TotalPhysicalMemory
-          Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores
 
       - name: Enable RDP
         shell: powershell
@@ -43,10 +41,8 @@ jobs:
         shell: powershell
         run: |
           Write-Host "Creating user Layer7Store..." -ForegroundColor Green
-
           $Username = "Layer7Store"
           $Password = ConvertTo-SecureString "P@ssw0rd!" -AsPlainText -Force
-
           $User = Get-LocalUser -Name $Username -ErrorAction SilentlyContinue
           if ($null -eq $User) {
               New-LocalUser -Name $Username -Password $Password -PasswordNeverExpires -AccountNeverExpires -FullName "Layer7 Store"
@@ -55,32 +51,13 @@ jobs:
               Set-LocalUser -Name $Username -Password $Password
               Write-Host "Password updated." -ForegroundColor Yellow
           }
-
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $Username -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Administrators" -Member $Username -ErrorAction SilentlyContinue
-
-          Write-Host ""
-          Write-Host "========================================" -ForegroundColor Cyan
-          Write-Host "Username: Layer7Store" -ForegroundColor White
-          Write-Host "Password: P@ssw0rd!" -ForegroundColor White
-          Write-Host "========================================" -ForegroundColor Cyan
-
-      - name: Setup Folders
-        shell: powershell
-        run: |
-          Write-Host "Setting up user folders..." -ForegroundColor Green
-          $UserProfile = "C:\Users\Layer7Store"
-
-          New-Item -ItemType Directory -Path "$UserProfile\Downloads" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$UserProfile\Desktop" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$UserProfile\Documents" -Force | Out-Null
-
-          Write-Host "Folders created." -ForegroundColor Green
+          Write-Host "Username: Layer7Store" -ForegroundColor Yellow
+          Write-Host "Password: P@ssw0rd!" -ForegroundColor Yellow
 
       - name: Install Ngrok
         shell: powershell
-        env:
-          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         run: |
           Write-Host "Downloading Ngrok..." -ForegroundColor Green
           $ngrokUrl = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
@@ -97,48 +74,16 @@ jobs:
               exit 1
           }
 
+          # Add AV exclusion
+          Add-MpPreference -ExclusionPath "C:\ngrok" -ErrorAction SilentlyContinue
+
           Write-Host "Configuring Ngrok token..." -ForegroundColor Green
-          & $ngrokExe config add-authtoken $env:NGROK_AUTH_TOKEN
+          & $ngrokExe config add-authtoken $env:NGROK_AUTH_TOKEN_SAFE 2>&1 | Out-Null
 
           Write-Host "Ngrok installed." -ForegroundColor Green
           & $ngrokExe version
-
-      - name: Start Ngrok Tunnel
-        shell: powershell
-        run: |
-          Write-Host "Starting Ngrok tunnel for RDP (port 3389)..." -ForegroundColor Green
-
-          Start-Process -FilePath "C:\ngrok\ngrok.exe" -ArgumentList "tcp 3389" -WindowStyle Hidden
-
-          Write-Host "Waiting for tunnel..."
-          Start-Sleep -Seconds 15
-
-          $maxAttempts = 10
-          $publicUrl = $null
-
-          for ($i = 1; $i -le $maxAttempts; $i++) {
-              try {
-                  $info = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels" -ErrorAction Stop
-                  if ($info.tunnels.Count -gt 0) {
-                      $publicUrl = $info.tunnels[0].public_url
-                      break
-                  }
-              } catch {
-                  Write-Host "Attempt $i - waiting for Ngrok API..."
-              }
-              Start-Sleep -Seconds 3
-          }
-
-          if (-not $publicUrl) {
-              Write-Error "Failed to get Ngrok URL."
-              exit 1
-          }
-
-          $hostPort = $publicUrl -replace "tcp://", ""
-          Write-Host "Ngrok URL: $hostPort" -ForegroundColor Green
-
-          "NGROK_HOSTPORT=$hostPort" >> $env:GITHUB_ENV
-          "NGROK_URL=$publicUrl" >> $env:GITHUB_ENV
+        env:
+          NGROK_AUTH_TOKEN_SAFE: ${{ secrets.NGROK_AUTH_TOKEN }}
 
       - name: Install Google Chrome
         shell: powershell
@@ -160,32 +105,10 @@ jobs:
           Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
           Write-Host "7-Zip installed." -ForegroundColor Green
 
-      - name: Connection Details
-        shell: powershell
-        run: |
-          $hostPort = $env:NGROK_HOSTPORT
-
-          Write-Host ""
-          Write-Host "==================================================" -ForegroundColor Cyan
-          Write-Host "         LAYER7 STORE RDP ACCESS" -ForegroundColor Cyan
-          Write-Host "==================================================" -ForegroundColor Cyan
-          Write-Host ""
-          Write-Host "  ADDRESS:  $hostPort" -ForegroundColor White
-          Write-Host "  USERNAME: Layer7Store" -ForegroundColor White
-          Write-Host "  PASSWORD: P@ssw0rd!" -ForegroundColor White
-          Write-Host ""
-          Write-Host "==================================================" -ForegroundColor Cyan
-          Write-Host ""
-          Write-Host "HOW TO CONNECT:" -ForegroundColor Yellow
-          Write-Host "  1. Open Remote Desktop Connection (mstsc)" -ForegroundColor White
-          Write-Host "  2. Computer: $hostPort" -ForegroundColor White
-          Write-Host "  3. Username: Layer7Store" -ForegroundColor White
-          Write-Host "  4. Password: P@ssw0rd!" -ForegroundColor White
-          Write-Host ""
-          Write-Host "  NO VPN REQUIRED - Connect directly from anywhere!" -ForegroundColor Green
-          Write-Host ""
-
-      - name: Keep Session Alive / Trigger Backup
+      # ============================================================
+      # NGORK + KEEP ALIVE (gộp chung 1 step)
+      # ============================================================
+      - name: Ngrok Tunnel + Keep Session Alive
         shell: powershell
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
@@ -197,9 +120,80 @@ jobs:
           $triggerBackup = (Get-Date).AddMinutes(295)
           $endSession    = (Get-Date).AddMinutes(310)
           $counter       = 0
+          $ngrokExe      = "C:\ngrok\ngrok.exe"
+          $ngrokLog      = "$env:TEMP\ngrok.log"
 
-          Write-Host "=== LAYER7 STORE SESSION ACTIVE ===" -ForegroundColor Green
-          Write-Host "RDP: $env:NGROK_HOSTPORT" -ForegroundColor Cyan
+          # ============================================================
+          # START NGROK
+          # ============================================================
+          Write-Host "=== Starting Ngrok tunnel for RDP (port 3389) ===" -ForegroundColor Green
+
+          # Kill existing ngrok
+          Get-Process -Name "ngrok" -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 2
+
+          # Start ngrok with log file
+          $ngrokProc = Start-Process -FilePath $ngrokExe `
+              -ArgumentList "tcp 3389 --log=$ngrokLog --log-format=json" `
+              -PassThru `
+              -WindowStyle Hidden
+
+          Write-Host "Ngrok started (PID: $($ngrokProc.Id))"
+          Write-Host "Waiting for tunnel to establish..."
+          Start-Sleep -Seconds 20
+
+          # ============================================================
+          # LẤY URL
+          # ============================================================
+          $publicUrl = $null
+          $maxAttempts = 20
+
+          for ($i = 1; $i -le $maxAttempts; $i++) {
+              try {
+                  $info = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -ErrorAction Stop
+                  if ($info.tunnels.Count -gt 0) {
+                      $publicUrl = $info.tunnels[0].public_url
+                      Write-Host "Ngrok URL obtained: $publicUrl" -ForegroundColor Green
+                      break
+                  }
+              } catch {
+                  # Silent retry
+              }
+              Write-Host "Waiting for Ngrok API... ($i/$maxAttempts)"
+              Start-Sleep -Seconds 3
+          }
+
+          if (-not $publicUrl) {
+              Write-Host "=== NGROK LOG ===" -ForegroundColor Red
+              Get-Content $ngrokLog -ErrorAction SilentlyContinue | Select-Object -Last 20
+              Write-Error "Failed to get Ngrok URL after $maxAttempts attempts."
+              exit 1
+          }
+
+          $hostPort = $publicUrl -replace "tcp://", ""
+
+          # ============================================================
+          # HIỂN THỊ THÔNG TIN KẾT NỐI
+          # ============================================================
+          Write-Host ""
+          Write-Host "==================================================" -ForegroundColor Cyan
+          Write-Host "         LAYER7 STORE RDP ACCESS" -ForegroundColor Cyan
+          Write-Host "==================================================" -ForegroundColor Cyan
+          Write-Host ""
+          Write-Host "  ADDRESS:  $hostPort" -ForegroundColor White
+          Write-Host "  USERNAME: Layer7Store" -ForegroundColor White
+          Write-Host "  PASSWORD: P@ssw0rd!" -ForegroundColor White
+          Write-Host ""
+          Write-Host "==================================================" -ForegroundColor Cyan
+          Write-Host "  Open mstsc → Computer: $hostPort" -ForegroundColor Yellow
+          Write-Host "  Username: Layer7Store / Password: P@ssw0rd!" -ForegroundColor Yellow
+          Write-Host "==================================================" -ForegroundColor Cyan
+          Write-Host ""
+
+          # ============================================================
+          # KEEP ALIVE LOOP
+          # ============================================================
+          Write-Host "=== SESSION ACTIVE ===" -ForegroundColor Green
 
           while ($true) {
               $counter++
@@ -207,16 +201,36 @@ jobs:
 
               Write-Host ""
               Write-Host "=== Heartbeat #$counter - $now ===" -ForegroundColor Cyan
+              Write-Host "RDP: $hostPort" -ForegroundColor Cyan
 
-              $ngrokProc = Get-Process -Name "ngrok" -ErrorAction SilentlyContinue
-              if ($null -eq $ngrokProc) {
+              # Kiểm tra ngrok còn sống
+              $proc = Get-Process -Name "ngrok" -ErrorAction SilentlyContinue
+              if ($null -eq $proc) {
                   Write-Host "Ngrok died! Restarting..." -ForegroundColor Red
-                  Start-Process -FilePath "C:\ngrok\ngrok.exe" -ArgumentList "tcp 3389" -WindowStyle Hidden
-                  Start-Sleep -Seconds 10
+
+                  $ngrokProc = Start-Process -FilePath $ngrokExe `
+                      -ArgumentList "tcp 3389 --log=$ngrokLog --log-format=json" `
+                      -PassThru `
+                      -WindowStyle Hidden
+
+                  Start-Sleep -Seconds 15
+
+                  # Cập nhật URL mới
+                  try {
+                      $info = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels"
+                      if ($info.tunnels.Count -gt 0) {
+                          $publicUrl = $info.tunnels[0].public_url
+                          $hostPort = $publicUrl -replace "tcp://", ""
+                          Write-Host "New URL: $hostPort" -ForegroundColor Yellow
+                      }
+                  } catch {
+                      Write-Host "Failed to get new URL" -ForegroundColor Red
+                  }
               } else {
-                  Write-Host "Ngrok: RUNNING" -ForegroundColor Green
+                  Write-Host "Ngrok: RUNNING (PID: $($proc.Id))" -ForegroundColor Green
               }
 
+              # Trigger backup sau 4h55m
               if ($now -ge $triggerBackup) {
                   Write-Host ""
                   Write-Host "*** TRIGGERING BACKUP WORKFLOW ***" -ForegroundColor Yellow
@@ -238,6 +252,7 @@ jobs:
                   }
               }
 
+              # Kết thúc session
               if ($now -ge $endSession) {
                   Write-Host "Session ended. Cleanup..." -ForegroundColor Yellow
                   Get-Process -Name "ngrok" -ErrorAction SilentlyContinue | Stop-Process -Force
