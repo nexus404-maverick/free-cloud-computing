@@ -45,7 +45,7 @@ jobs:
           Write-Host "Creating user Layer7Store..." -ForegroundColor Green
 
           $Username = "Layer7Store"
-          $Password = ConvertTo-SecureString "Layer7@2025" -AsPlainText -Force
+          $Password = ConvertTo-SecureString "P@ssw0rd!" -AsPlainText -Force
 
           $User = Get-LocalUser -Name $Username -ErrorAction SilentlyContinue
           if ($null -eq $User) {
@@ -62,7 +62,7 @@ jobs:
           Write-Host ""
           Write-Host "========================================" -ForegroundColor Cyan
           Write-Host "Username: Layer7Store" -ForegroundColor White
-          Write-Host "Password: Layer7@2025" -ForegroundColor White
+          Write-Host "Password: P@ssw0rd!" -ForegroundColor White
           Write-Host "========================================" -ForegroundColor Cyan
 
       - name: Setup Folders
@@ -172,7 +172,7 @@ jobs:
           Write-Host ""
           Write-Host "  ADDRESS:  $hostPort" -ForegroundColor White
           Write-Host "  USERNAME: Layer7Store" -ForegroundColor White
-          Write-Host "  PASSWORD: Layer7@2025" -ForegroundColor White
+          Write-Host "  PASSWORD: P@ssw0rd!" -ForegroundColor White
           Write-Host ""
           Write-Host "==================================================" -ForegroundColor Cyan
           Write-Host ""
@@ -180,7 +180,7 @@ jobs:
           Write-Host "  1. Open Remote Desktop Connection (mstsc)" -ForegroundColor White
           Write-Host "  2. Computer: $hostPort" -ForegroundColor White
           Write-Host "  3. Username: Layer7Store" -ForegroundColor White
-          Write-Host "  4. Password: Layer7@2025" -ForegroundColor White
+          Write-Host "  4. Password: P@ssw0rd!" -ForegroundColor White
           Write-Host ""
           Write-Host "  NO VPN REQUIRED - Connect directly from anywhere!" -ForegroundColor Green
           Write-Host ""
