@@ -45,7 +45,7 @@ jobs:
           Write-Host "Creating user Layer7Store..." -ForegroundColor Green
 
           $Username = "Layer7Store"
-          $Password = ConvertTo-SecureString "helloword" -AsPlainText -Force
+          $Password = ConvertTo-SecureString "Layer7@2025" -AsPlainText -Force
 
           $User = Get-LocalUser -Name $Username -ErrorAction SilentlyContinue
           if ($null -eq $User) {
@@ -53,11 +53,29 @@ jobs:
               Write-Host "User created." -ForegroundColor Green
           } else {
               Set-LocalUser -Name $Username -Password $Password
-              Write-Host "User password updated." -ForegroundColor Yellow
+              Write-Host "Password updated." -ForegroundColor Yellow
           }
 
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $Username -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Administrators" -Member $Username -ErrorAction SilentlyContinue
+
+          Write-Host ""
+          Write-Host "========================================" -ForegroundColor Cyan
+          Write-Host "Username: Layer7Store" -ForegroundColor White
+          Write-Host "Password: Layer7@2025" -ForegroundColor White
+          Write-Host "========================================" -ForegroundColor Cyan
+
+      - name: Setup Folders
+        shell: powershell
+        run: |
+          Write-Host "Setting up user folders..." -ForegroundColor Green
+          $UserProfile = "C:\Users\Layer7Store"
+
+          New-Item -ItemType Directory -Path "$UserProfile\Downloads" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$UserProfile\Desktop" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$UserProfile\Documents" -Force | Out-Null
+
+          Write-Host "Folders created." -ForegroundColor Green
 
       - name: Install Ngrok
         shell: powershell
@@ -90,13 +108,11 @@ jobs:
         run: |
           Write-Host "Starting Ngrok tunnel for RDP (port 3389)..." -ForegroundColor Green
 
-          # Start ngrok in background
           Start-Process -FilePath "C:\ngrok\ngrok.exe" -ArgumentList "tcp 3389" -WindowStyle Hidden
 
           Write-Host "Waiting for tunnel..."
           Start-Sleep -Seconds 15
 
-          # Get public URL from Ngrok API
           $maxAttempts = 10
           $publicUrl = $null
 
@@ -118,7 +134,6 @@ jobs:
               exit 1
           }
 
-          # Extract host:port from tcp://x.tcp.ngrok.io:12345
           $hostPort = $publicUrl -replace "tcp://", ""
           Write-Host "Ngrok URL: $hostPort" -ForegroundColor Green
 
@@ -133,6 +148,7 @@ jobs:
           Invoke-WebRequest -Uri $chromeUrl -OutFile $installerPath
           Start-Process -FilePath $installerPath -ArgumentList "/silent /install" -Wait -NoNewWindow
           Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+          Write-Host "Chrome installed." -ForegroundColor Green
 
       - name: Install 7-Zip
         shell: powershell
@@ -142,6 +158,7 @@ jobs:
           Invoke-WebRequest -Uri $zipUrl -OutFile $installerPath
           Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait -NoNewWindow
           Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+          Write-Host "7-Zip installed." -ForegroundColor Green
 
       - name: Connection Details
         shell: powershell
@@ -155,7 +172,7 @@ jobs:
           Write-Host ""
           Write-Host "  ADDRESS:  $hostPort" -ForegroundColor White
           Write-Host "  USERNAME: Layer7Store" -ForegroundColor White
-          Write-Host "  PASSWORD: helloword" -ForegroundColor White
+          Write-Host "  PASSWORD: Layer7@2025" -ForegroundColor White
           Write-Host ""
           Write-Host "==================================================" -ForegroundColor Cyan
           Write-Host ""
@@ -163,7 +180,7 @@ jobs:
           Write-Host "  1. Open Remote Desktop Connection (mstsc)" -ForegroundColor White
           Write-Host "  2. Computer: $hostPort" -ForegroundColor White
           Write-Host "  3. Username: Layer7Store" -ForegroundColor White
-          Write-Host "  4. Password: helloword" -ForegroundColor White
+          Write-Host "  4. Password: Layer7@2025" -ForegroundColor White
           Write-Host ""
           Write-Host "  NO VPN REQUIRED - Connect directly from anywhere!" -ForegroundColor Green
           Write-Host ""
@@ -191,7 +208,6 @@ jobs:
               Write-Host ""
               Write-Host "=== Heartbeat #$counter - $now ===" -ForegroundColor Cyan
 
-              # Check Ngrok is still running
               $ngrokProc = Get-Process -Name "ngrok" -ErrorAction SilentlyContinue
               if ($null -eq $ngrokProc) {
                   Write-Host "Ngrok died! Restarting..." -ForegroundColor Red
