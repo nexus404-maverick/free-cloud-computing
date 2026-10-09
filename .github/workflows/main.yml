@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   deploy-rdp:
-    runs-on: windows-latest
+    runs-on: windows-2025
     timeout-minutes: 330
 
     steps:
@@ -25,118 +25,105 @@ jobs:
       - name: System Information
         shell: powershell
         run: |
-          Write-Host "=== ENIGMANO RDP DEPLOYMENT ===" -ForegroundColor Green
-          Write-Host "Instance Number: ${{ github.event.inputs.instance_number }}" -ForegroundColor Yellow
-          Write-Host "Runner: $env:RUNNER_NAME" -ForegroundColor Yellow
+          Write-Host "=== LAYER7 STORE RDP ===" -ForegroundColor Green
           Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsArchitecture
+          Get-CimInstance Win32_ComputerSystem | Select-Object TotalPhysicalMemory
+          Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores
 
       - name: Enable RDP
         shell: powershell
         run: |
-          Write-Host "Enabling Remote Desktop..." -ForegroundColor Green
+          Write-Host "Enabling RDP..." -ForegroundColor Green
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 1
           Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'
-          Write-Host "Remote Desktop enabled." -ForegroundColor Green
+          Write-Host "RDP enabled." -ForegroundColor Green
 
-      - name: Create User Account
+      - name: Create User Layer7Store
         shell: powershell
         run: |
-          Write-Host "Setting up user account..." -ForegroundColor Green
-          $Password = ConvertTo-SecureString "P@ssw0rd!" -AsPlainText -Force
-          $User = Get-LocalUser -Name "runneradmin" -ErrorAction SilentlyContinue
+          Write-Host "Creating user Layer7Store..." -ForegroundColor Green
+
+          $Username = "Layer7Store"
+          $Password = ConvertTo-SecureString "helloword" -AsPlainText -Force
+
+          $User = Get-LocalUser -Name $Username -ErrorAction SilentlyContinue
           if ($null -eq $User) {
-              New-LocalUser -Name "runneradmin" -Password $Password -PasswordNeverExpires -AccountNeverExpires
+              New-LocalUser -Name $Username -Password $Password -PasswordNeverExpires -AccountNeverExpires -FullName "Layer7 Store"
+              Write-Host "User created." -ForegroundColor Green
           } else {
-              Set-LocalUser -Name "runneradmin" -Password $Password
+              Set-LocalUser -Name $Username -Password $Password
+              Write-Host "User password updated." -ForegroundColor Yellow
           }
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "runneradmin" -ErrorAction SilentlyContinue
-          Write-Host "Username: runneradmin / Password: P@ssw0rd!" -ForegroundColor Yellow
 
-      - name: Install Tailscale
-        shell: powershell
-        run: |
-          Write-Host "Downloading Tailscale..." -ForegroundColor Green
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$installerPath`" /quiet /norestart" -Wait -NoNewWindow
-          Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
-          & "C:\Program Files\Tailscale\tailscale.exe" version
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $Username -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Administrators" -Member $Username -ErrorAction SilentlyContinue
 
-      - name: Generate New Tailscale Auth Key
+      - name: Install Ngrok
         shell: powershell
         env:
-          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         run: |
-          $ErrorActionPreference = "Stop"
-          Write-Host "=== GENERATING NEW TAILSCALE AUTH KEY ===" -ForegroundColor Cyan
+          Write-Host "Downloading Ngrok..." -ForegroundColor Green
+          $ngrokUrl = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
+          $zipPath = "$env:TEMP\ngrok.zip"
+          Invoke-WebRequest -Uri $ngrokUrl -OutFile $zipPath
 
-          $tokenBody = @{
-              client_id     = $env:TS_OAUTH_CLIENT_ID
-              client_secret = $env:TS_OAUTH_SECRET
-          }
+          Write-Host "Extracting..." -ForegroundColor Green
+          Expand-Archive -Path $zipPath -DestinationPath "C:\ngrok" -Force
+          Remove-Item $zipPath -Force
 
-          try {
-              $tokenResp = Invoke-RestMethod -Uri "https://api.tailscale.com/api/v2/oauth/token" -Method Post -Body $tokenBody -ContentType "application/x-www-form-urlencoded"
-              Write-Host "OAuth access token obtained." -ForegroundColor Green
-          }
-          catch {
-              Write-Host "LOI LAY TOKEN: $($_.ErrorDetails.Message)" -ForegroundColor Red
+          $ngrokExe = "C:\ngrok\ngrok.exe"
+          if (-not (Test-Path $ngrokExe)) {
+              Write-Error "Ngrok not found."
               exit 1
           }
 
-          $accessToken = $tokenResp.access_token
+          Write-Host "Configuring Ngrok token..." -ForegroundColor Green
+          & $ngrokExe config add-authtoken $env:NGROK_AUTH_TOKEN
 
-          $keyBody = @{
-              capabilities = @{
-                  devices = @{
-                      create = @{
-                          reusable      = $true
-                          ephemeral     = $true
-                          preauthorized = $true
-                          tags          = @("tag:github-runner")
-                      }
+          Write-Host "Ngrok installed." -ForegroundColor Green
+          & $ngrokExe version
+
+      - name: Start Ngrok Tunnel
+        shell: powershell
+        run: |
+          Write-Host "Starting Ngrok tunnel for RDP (port 3389)..." -ForegroundColor Green
+
+          # Start ngrok in background
+          Start-Process -FilePath "C:\ngrok\ngrok.exe" -ArgumentList "tcp 3389" -WindowStyle Hidden
+
+          Write-Host "Waiting for tunnel..."
+          Start-Sleep -Seconds 15
+
+          # Get public URL from Ngrok API
+          $maxAttempts = 10
+          $publicUrl = $null
+
+          for ($i = 1; $i -le $maxAttempts; $i++) {
+              try {
+                  $info = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels" -ErrorAction Stop
+                  if ($info.tunnels.Count -gt 0) {
+                      $publicUrl = $info.tunnels[0].public_url
+                      break
                   }
+              } catch {
+                  Write-Host "Attempt $i - waiting for Ngrok API..."
               }
-              expirySeconds = 3600
-              description   = "enigmano-run-${{ github.run_id }}"
-          } | ConvertTo-Json -Depth 10
-
-          $headers = @{
-              "Authorization" = "Bearer $accessToken"
-              "Content-Type"  = "application/json"
+              Start-Sleep -Seconds 3
           }
 
-          try {
-              $keyResp = Invoke-RestMethod -Uri "https://api.tailscale.com/api/v2/tailnet/-/keys" -Method Post -Headers $headers -Body $keyBody
-              Write-Host "New auth key created: $($keyResp.id)" -ForegroundColor Green
-          }
-          catch {
-              Write-Host "LOI TAO KEY: $($_.ErrorDetails.Message)" -ForegroundColor Red
+          if (-not $publicUrl) {
+              Write-Error "Failed to get Ngrok URL."
               exit 1
           }
 
-          "TS_NEW_AUTH_KEY=$($keyResp.key)" >> $env:GITHUB_ENV
+          # Extract host:port from tcp://x.tcp.ngrok.io:12345
+          $hostPort = $publicUrl -replace "tcp://", ""
+          Write-Host "Ngrok URL: $hostPort" -ForegroundColor Green
 
-      - name: Start Tailscale
-        shell: powershell
-        run: |
-          $tailscale = "C:\Program Files\Tailscale\tailscale.exe"
-          $hostname = "enigmano-${{ github.run_id }}"
-          & $tailscale up --auth-key="$env:TS_NEW_AUTH_KEY" --hostname="$hostname" --advertise-tags="tag:github-runner"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Start-Sleep -Seconds 10
-          Write-Host "Tailscale started successfully." -ForegroundColor Green
-
-      - name: Get Tailscale IP
-        shell: powershell
-        run: |
-          $tailscale = "C:\Program Files\Tailscale\tailscale.exe"
-          $tsIP = (& $tailscale ip -4 | Select-Object -First 1).Trim()
-          Write-Host "Tailscale IP: $tsIP" -ForegroundColor Green
-          "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          "NGROK_HOSTPORT=$hostPort" >> $env:GITHUB_ENV
+          "NGROK_URL=$publicUrl" >> $env:GITHUB_ENV
 
       - name: Install Google Chrome
         shell: powershell
@@ -159,33 +146,43 @@ jobs:
       - name: Connection Details
         shell: powershell
         run: |
-          Write-Host "`n=== CONNECTION DETAILS ===" -ForegroundColor Green
-          Write-Host "========================================" -ForegroundColor Cyan
-          Write-Host "Host:     $env:TAILSCALE_IP" -ForegroundColor White
-          Write-Host "Username: runneradmin" -ForegroundColor White
-          Write-Host "Password: P@ssw0rd!" -ForegroundColor White
-          Write-Host "========================================" -ForegroundColor Cyan
+          $hostPort = $env:NGROK_HOSTPORT
 
-      # ============================================================
-      # KEEP SESSION ALIVE - TRIGGER BACKUP SAU 4H55M
-      # ============================================================
+          Write-Host ""
+          Write-Host "==================================================" -ForegroundColor Cyan
+          Write-Host "         LAYER7 STORE RDP ACCESS" -ForegroundColor Cyan
+          Write-Host "==================================================" -ForegroundColor Cyan
+          Write-Host ""
+          Write-Host "  ADDRESS:  $hostPort" -ForegroundColor White
+          Write-Host "  USERNAME: Layer7Store" -ForegroundColor White
+          Write-Host "  PASSWORD: helloword" -ForegroundColor White
+          Write-Host ""
+          Write-Host "==================================================" -ForegroundColor Cyan
+          Write-Host ""
+          Write-Host "HOW TO CONNECT:" -ForegroundColor Yellow
+          Write-Host "  1. Open Remote Desktop Connection (mstsc)" -ForegroundColor White
+          Write-Host "  2. Computer: $hostPort" -ForegroundColor White
+          Write-Host "  3. Username: Layer7Store" -ForegroundColor White
+          Write-Host "  4. Password: helloword" -ForegroundColor White
+          Write-Host ""
+          Write-Host "  NO VPN REQUIRED - Connect directly from anywhere!" -ForegroundColor Green
+          Write-Host ""
+
       - name: Keep Session Alive / Trigger Backup
         shell: powershell
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          $tailscale     = "C:\Program Files\Tailscale\tailscale.exe"
           $instance      = "${{ github.event.inputs.instance_number }}"
           $repo          = "${{ github.repository }}"
           $ref           = "${{ github.ref_name }}"
           $sleepSeconds  = 60
-          $triggerBackup = (Get-Date).AddMinutes(295)   # 4h55m = 295 phút
-          $endSession    = (Get-Date).AddMinutes(310)   # 5h10m = kết thúc chắc chắn
+          $triggerBackup = (Get-Date).AddMinutes(295)
+          $endSession    = (Get-Date).AddMinutes(310)
           $counter       = 0
 
-          Write-Host "=== MAIN WORKFLOW STARTED ===" -ForegroundColor Green
-          Write-Host "Will trigger backup.yml at: $triggerBackup" -ForegroundColor Yellow
-          Write-Host "Will end session at:         $endSession" -ForegroundColor Yellow
+          Write-Host "=== LAYER7 STORE SESSION ACTIVE ===" -ForegroundColor Green
+          Write-Host "RDP: $env:NGROK_HOSTPORT" -ForegroundColor Cyan
 
           while ($true) {
               $counter++
@@ -194,63 +191,42 @@ jobs:
               Write-Host ""
               Write-Host "=== Heartbeat #$counter - $now ===" -ForegroundColor Cyan
 
-              # === Kiểm tra trigger backup ===
+              # Check Ngrok is still running
+              $ngrokProc = Get-Process -Name "ngrok" -ErrorAction SilentlyContinue
+              if ($null -eq $ngrokProc) {
+                  Write-Host "Ngrok died! Restarting..." -ForegroundColor Red
+                  Start-Process -FilePath "C:\ngrok\ngrok.exe" -ArgumentList "tcp 3389" -WindowStyle Hidden
+                  Start-Sleep -Seconds 10
+              } else {
+                  Write-Host "Ngrok: RUNNING" -ForegroundColor Green
+              }
+
               if ($now -ge $triggerBackup) {
-                  Write-Host "`n*** TRIGGERING BACKUP WORKFLOW ***" -ForegroundColor Yellow
+                  Write-Host ""
+                  Write-Host "*** TRIGGERING BACKUP WORKFLOW ***" -ForegroundColor Yellow
 
-                  $maxRetries = 3
                   $success = $false
-
-                  for ($i = 1; $i -le $maxRetries; $i++) {
-                      Write-Host "Attempt $i of $maxRetries..." -ForegroundColor Yellow
-
-                      gh workflow run backup.yml `
-                          --repo $repo `
-                          --ref  $ref `
-                          -f "instance_number=$instance"
-
-                      if ($LASTEXITCODE -eq 0) {
-                          $success = $true
-                          break
-                      }
-
-                      Write-Host "Attempt $i failed." -ForegroundColor Red
-                      if ($i -lt $maxRetries) { Start-Sleep -Seconds 10 }
+                  for ($i = 1; $i -le 3; $i++) {
+                      gh workflow run backup.yml --repo $repo --ref $ref -f "instance_number=$instance"
+                      if ($LASTEXITCODE -eq 0) { $success = $true; break }
+                      Start-Sleep -Seconds 10
                   }
 
                   if ($success) {
-                      Write-Host "Backup workflow triggered successfully." -ForegroundColor Green
+                      Write-Host "Backup triggered successfully." -ForegroundColor Green
+                      $triggerBackup = (Get-Date).AddYears(1)
                   } else {
-                      Write-Host "FAILED to trigger backup. Retrying in 60s..." -ForegroundColor Red
+                      Write-Host "Failed to trigger backup. Retrying in 60s..." -ForegroundColor Red
                       Start-Sleep -Seconds 60
                       continue
                   }
-
-                  # Đánh dấu đã trigger backup (đổi thời gian để không trigger lại)
-                  $triggerBackup = (Get-Date).AddYears(1)
               }
 
-              # === Kết thúc session khi hết giờ ===
               if ($now -ge $endSession) {
-                  Write-Host "`n=== SESSION ENDED ===" -ForegroundColor Yellow
-                  Write-Host "Logging out Tailscale..." -ForegroundColor Yellow
-                  & $tailscale logout 2>$null
-                  Start-Sleep -Seconds 3
-                  & $tailscale down 2>$null
-                  Write-Host "Cleanup complete. Exiting." -ForegroundColor Green
+                  Write-Host "Session ended. Cleanup..." -ForegroundColor Yellow
+                  Get-Process -Name "ngrok" -ErrorAction SilentlyContinue | Stop-Process -Force
                   exit 0
               }
-
-              # === Kiểm tra Tailscale còn sống ===
-              & $tailscale status 2>&1 | Out-Null
-              if ($LASTEXITCODE -eq 0) {
-                  Write-Host "Tailscale: ACTIVE" -ForegroundColor Green
-              } else {
-                  Write-Host "Tailscale: DOWN" -ForegroundColor Red
-              }
-
-              $remaining = $endSession - $now
-              Write-Host ("Session ends in: {0:hh\:mm\:ss}" -f $remaining) -ForegroundColor Yellow
 
               Start-Sleep -Seconds $sleepSeconds
           }
