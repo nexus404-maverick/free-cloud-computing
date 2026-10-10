@@ -53,37 +53,39 @@ jobs:
           }
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $Username -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Administrators" -Member $Username -ErrorAction SilentlyContinue
-          Write-Host "Username: Layer7Store" -ForegroundColor Yellow
-          Write-Host "Password: P@ssw0rd!" -ForegroundColor Yellow
+          Write-Host "Username: Layer7Store / Password: P@ssw0rd!" -ForegroundColor Yellow
 
-      - name: Install Ngrok
+      - name: Install Bore
         shell: powershell
         run: |
-          Write-Host "Downloading Ngrok..." -ForegroundColor Green
-          $ngrokUrl = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
-          $zipPath = "$env:TEMP\ngrok.zip"
-          Invoke-WebRequest -Uri $ngrokUrl -OutFile $zipPath
+          Write-Host "Downloading Bore..." -ForegroundColor Green
+          $boreUrl = "https://github.com/ekzhang/bore/releases/download/v0.5.3/bore-v0.5.3-x86_64-pc-windows-msvc.zip"
+          $zipPath = "$env:TEMP\bore.zip"
+
+          try {
+              Invoke-WebRequest -Uri $boreUrl -OutFile $zipPath -ErrorAction Stop
+          } catch {
+              Write-Host "Fallback to v0.5.0..."
+              $boreUrl = "https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-pc-windows-msvc.zip"
+              Invoke-WebRequest -Uri $boreUrl -OutFile $zipPath
+          }
 
           Write-Host "Extracting..." -ForegroundColor Green
-          Expand-Archive -Path $zipPath -DestinationPath "C:\ngrok" -Force
+          Expand-Archive -Path $zipPath -DestinationPath "C:\bore" -Force
           Remove-Item $zipPath -Force
 
-          $ngrokExe = "C:\ngrok\ngrok.exe"
-          if (-not (Test-Path $ngrokExe)) {
-              Write-Error "Ngrok not found."
+          $boreExe = (Get-ChildItem "C:\bore\*.exe" -Recurse | Select-Object -First 1).FullName
+          Write-Host "Bore path: $boreExe"
+
+          if (-not (Test-Path $boreExe)) {
+              Write-Error "Bore not found."
               exit 1
           }
 
-          # Add AV exclusion
-          Add-MpPreference -ExclusionPath "C:\ngrok" -ErrorAction SilentlyContinue
+          # AV exclusion
+          Add-MpPreference -ExclusionPath "C:\bore" -ErrorAction SilentlyContinue
 
-          Write-Host "Configuring Ngrok token..." -ForegroundColor Green
-          & $ngrokExe config add-authtoken $env:NGROK_AUTH_TOKEN_SAFE 2>&1 | Out-Null
-
-          Write-Host "Ngrok installed." -ForegroundColor Green
-          & $ngrokExe version
-        env:
-          NGROK_AUTH_TOKEN_SAFE: ${{ secrets.NGROK_AUTH_TOKEN }}
+          & $boreExe --version
 
       - name: Install Google Chrome
         shell: powershell
@@ -93,7 +95,6 @@ jobs:
           Invoke-WebRequest -Uri $chromeUrl -OutFile $installerPath
           Start-Process -FilePath $installerPath -ArgumentList "/silent /install" -Wait -NoNewWindow
           Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
-          Write-Host "Chrome installed." -ForegroundColor Green
 
       - name: Install 7-Zip
         shell: powershell
@@ -103,12 +104,11 @@ jobs:
           Invoke-WebRequest -Uri $zipUrl -OutFile $installerPath
           Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait -NoNewWindow
           Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
-          Write-Host "7-Zip installed." -ForegroundColor Green
 
       # ============================================================
-      # NGORK + KEEP ALIVE (gộp chung 1 step)
+      # BORE + KEEP ALIVE (gộp chung 1 step)
       # ============================================================
-      - name: Ngrok Tunnel + Keep Session Alive
+      - name: Bore Tunnel + Keep Session Alive
         shell: powershell
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
@@ -120,57 +120,58 @@ jobs:
           $triggerBackup = (Get-Date).AddMinutes(295)
           $endSession    = (Get-Date).AddMinutes(310)
           $counter       = 0
-          $ngrokExe      = "C:\ngrok\ngrok.exe"
-          $ngrokLog      = "$env:TEMP\ngrok.log"
+          $boreExe       = (Get-ChildItem "C:\bore\*.exe" -Recurse | Select-Object -First 1).FullName
+          $boreLog       = "$env:TEMP\bore.log"
 
           # ============================================================
-          # START NGROK
+          # START BORE
           # ============================================================
-          Write-Host "=== Starting Ngrok tunnel for RDP (port 3389) ===" -ForegroundColor Green
+          Write-Host "=== Starting Bore tunnel for RDP (port 3389) ===" -ForegroundColor Green
 
-          # Kill existing ngrok
-          Get-Process -Name "ngrok" -ErrorAction SilentlyContinue | Stop-Process -Force
+          Get-Process -Name "bore" -ErrorAction SilentlyContinue | Stop-Process -Force
           Start-Sleep -Seconds 2
 
-          # Start ngrok with log file
-          $ngrokProc = Start-Process -FilePath $ngrokExe `
-              -ArgumentList "tcp 3389 --log=$ngrokLog --log-format=json" `
+          # Start bore with output redirect
+          $boreProc = Start-Process -FilePath $boreExe `
+              -ArgumentList "local 3389 --to bore.pub" `
               -PassThru `
-              -WindowStyle Hidden
+              -WindowStyle Hidden `
+              -RedirectStandardOutput $boreLog `
+              -RedirectStandardError "$env:TEMP\bore-err.log"
 
-          Write-Host "Ngrok started (PID: $($ngrokProc.Id))"
+          Write-Host "Bore started (PID: $($boreProc.Id))"
           Write-Host "Waiting for tunnel to establish..."
-          Start-Sleep -Seconds 20
+          Start-Sleep -Seconds 15
 
           # ============================================================
-          # LẤY URL
+          # LẤY URL TỪ OUTPUT
           # ============================================================
           $publicUrl = $null
           $maxAttempts = 20
 
           for ($i = 1; $i -le $maxAttempts; $i++) {
-              try {
-                  $info = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -ErrorAction Stop
-                  if ($info.tunnels.Count -gt 0) {
-                      $publicUrl = $info.tunnels[0].public_url
-                      Write-Host "Ngrok URL obtained: $publicUrl" -ForegroundColor Green
+              if (Test-Path $boreLog) {
+                  $content = Get-Content $boreLog -Raw
+                  # Tìm dòng "listening at bore.pub:XXXXX"
+                  if ($content -match "listening at (bore\.pub:\d+)") {
+                      $publicUrl = $matches[1]
                       break
                   }
-              } catch {
-                  # Silent retry
               }
-              Write-Host "Waiting for Ngrok API... ($i/$maxAttempts)"
-              Start-Sleep -Seconds 3
+              Write-Host "Waiting for Bore... ($i/$maxAttempts)"
+              Start-Sleep -Seconds 2
           }
 
           if (-not $publicUrl) {
-              Write-Host "=== NGROK LOG ===" -ForegroundColor Red
-              Get-Content $ngrokLog -ErrorAction SilentlyContinue | Select-Object -Last 20
-              Write-Error "Failed to get Ngrok URL after $maxAttempts attempts."
+              Write-Host "=== BORE LOG ===" -ForegroundColor Red
+              if (Test-Path $boreLog) { Get-Content $boreLog | Select-Object -Last 20 }
+              if (Test-Path "$env:TEMP\bore-err.log") {
+                  Write-Host "=== ERR LOG ===" -ForegroundColor Red
+                  Get-Content "$env:TEMP\bore-err.log" | Select-Object -Last 20
+              }
+              Write-Error "Failed to get Bore URL."
               exit 1
           }
-
-          $hostPort = $publicUrl -replace "tcp://", ""
 
           # ============================================================
           # HIỂN THỊ THÔNG TIN KẾT NỐI
@@ -180,13 +181,14 @@ jobs:
           Write-Host "         LAYER7 STORE RDP ACCESS" -ForegroundColor Cyan
           Write-Host "==================================================" -ForegroundColor Cyan
           Write-Host ""
-          Write-Host "  ADDRESS:  $hostPort" -ForegroundColor White
+          Write-Host "  ADDRESS:  $publicUrl" -ForegroundColor White
           Write-Host "  USERNAME: Layer7Store" -ForegroundColor White
           Write-Host "  PASSWORD: P@ssw0rd!" -ForegroundColor White
           Write-Host ""
           Write-Host "==================================================" -ForegroundColor Cyan
-          Write-Host "  Open mstsc → Computer: $hostPort" -ForegroundColor Yellow
-          Write-Host "  Username: Layer7Store / Password: P@ssw0rd!" -ForegroundColor Yellow
+          Write-Host "  Open mstsc / RD Client" -ForegroundColor Yellow
+          Write-Host "  Computer: $publicUrl" -ForegroundColor Yellow
+          Write-Host "  User: Layer7Store / Pass: P@ssw0rd!" -ForegroundColor Yellow
           Write-Host "==================================================" -ForegroundColor Cyan
           Write-Host ""
 
@@ -201,36 +203,36 @@ jobs:
 
               Write-Host ""
               Write-Host "=== Heartbeat #$counter - $now ===" -ForegroundColor Cyan
-              Write-Host "RDP: $hostPort" -ForegroundColor Cyan
+              Write-Host "RDP: $publicUrl" -ForegroundColor Cyan
 
-              # Kiểm tra ngrok còn sống
-              $proc = Get-Process -Name "ngrok" -ErrorAction SilentlyContinue
+              # Check bore alive
+              $proc = Get-Process -Name "bore" -ErrorAction SilentlyContinue
               if ($null -eq $proc) {
-                  Write-Host "Ngrok died! Restarting..." -ForegroundColor Red
+                  Write-Host "Bore died! Restarting..." -ForegroundColor Red
 
-                  $ngrokProc = Start-Process -FilePath $ngrokExe `
-                      -ArgumentList "tcp 3389 --log=$ngrokLog --log-format=json" `
+                  $boreProc = Start-Process -FilePath $boreExe `
+                      -ArgumentList "local 3389 --to bore.pub" `
                       -PassThru `
-                      -WindowStyle Hidden
+                      -WindowStyle Hidden `
+                      -RedirectStandardOutput $boreLog `
+                      -RedirectStandardError "$env:TEMP\bore-err.log"
 
                   Start-Sleep -Seconds 15
 
-                  # Cập nhật URL mới
-                  try {
-                      $info = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels"
-                      if ($info.tunnels.Count -gt 0) {
-                          $publicUrl = $info.tunnels[0].public_url
-                          $hostPort = $publicUrl -replace "tcp://", ""
-                          Write-Host "New URL: $hostPort" -ForegroundColor Yellow
+                  # Get new URL
+                  if (Test-Path $boreLog) {
+                      $content = Get-Content $boreLog -Raw
+                      if ($content -match "listening at (bore\.pub:\d+)") {
+                          $publicUrl = $matches[1]
+                          Write-Host "NEW ADDRESS: $publicUrl" -ForegroundColor Yellow
+                          Write-Host "*** NOTE: Reconnect RDP with new address ***" -ForegroundColor Yellow
                       }
-                  } catch {
-                      Write-Host "Failed to get new URL" -ForegroundColor Red
                   }
               } else {
-                  Write-Host "Ngrok: RUNNING (PID: $($proc.Id))" -ForegroundColor Green
+                  Write-Host "Bore: RUNNING" -ForegroundColor Green
               }
 
-              # Trigger backup sau 4h55m
+              # Trigger backup
               if ($now -ge $triggerBackup) {
                   Write-Host ""
                   Write-Host "*** TRIGGERING BACKUP WORKFLOW ***" -ForegroundColor Yellow
@@ -243,19 +245,18 @@ jobs:
                   }
 
                   if ($success) {
-                      Write-Host "Backup triggered successfully." -ForegroundColor Green
+                      Write-Host "Backup triggered." -ForegroundColor Green
                       $triggerBackup = (Get-Date).AddYears(1)
                   } else {
-                      Write-Host "Failed to trigger backup. Retrying in 60s..." -ForegroundColor Red
                       Start-Sleep -Seconds 60
                       continue
                   }
               }
 
-              # Kết thúc session
+              # End session
               if ($now -ge $endSession) {
                   Write-Host "Session ended. Cleanup..." -ForegroundColor Yellow
-                  Get-Process -Name "ngrok" -ErrorAction SilentlyContinue | Stop-Process -Force
+                  Get-Process -Name "bore" -ErrorAction SilentlyContinue | Stop-Process -Force
                   exit 0
               }
 
