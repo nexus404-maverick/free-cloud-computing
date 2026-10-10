@@ -58,7 +58,7 @@ jobs:
           Write-Host "Username: Layer7Store / Password: P@ssw0rd!" -ForegroundColor Yellow
 
       # ============================================================
-      # INSTALL MESA3D (Software OpenGL cho Minecraft)
+      # INSTALL MESA3D (Software OpenGL)
       # ============================================================
       - name: Install Mesa3D
         shell: powershell
@@ -82,11 +82,9 @@ jobs:
               exit 0
           }
 
-          # Tải 7zr standalone
           Invoke-WebRequest -Uri "https://www.7-zip.org/a/7zr.exe" -OutFile "C:\Mesa\7zr.exe"
           & "C:\Mesa\7zr.exe" x $mesaFile -oC:\Mesa -y | Out-Null
 
-          # Tìm opengl32.dll cho x64
           $mesaDll = Get-ChildItem "C:\Mesa" -Recurse -Filter "opengl32.dll" -ErrorAction SilentlyContinue |
                      Where-Object { $_.DirectoryName -match "x64" } |
                      Select-Object -First 1
@@ -97,56 +95,9 @@ jobs:
               [System.Environment]::SetEnvironmentVariable("GALLIUM_DRIVER", "llvmpipe", "Machine")
               [System.Environment]::SetEnvironmentVariable("LIBGL_ALWAYS_SOFTWARE", "1", "Machine")
               Write-Host "Mesa3D installed." -ForegroundColor Green
+          } else {
+              Write-Host "Mesa opengl32.dll not found, skipping." -ForegroundColor Yellow
           }
-
-      # ============================================================
-      # INSTALL JAVA JDK 21
-      # ============================================================
-      - name: Install Java JDK 21
-        shell: powershell
-        continue-on-error: true
-        run: |
-          Write-Host "=== Installing Java JDK 21 ===" -ForegroundColor Cyan
-
-          $javaUrl = "https://download.oracle.com/java/21/latest/jdk-21_windows-x64_bin.msi"
-          $installerPath = "$env:TEMP\jdk21.msi"
-
-          Invoke-WebRequest -Uri $javaUrl -OutFile $installerPath
-          Start-Process -FilePath "msiexec.exe" `
-            -ArgumentList "/i `"$installerPath`" /quiet ADDLOCAL=FeatureMain,FeatureEnvironment,FeatureJarFileRunWith,FeatureJavaHome" `
-            -Wait -NoNewWindow
-
-          Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
-          $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
-          java -version
-
-      # ============================================================
-      # INSTALL MINECRAFT LAUNCHER
-      # ============================================================
-      - name: Install Minecraft Launcher
-        shell: powershell
-        continue-on-error: true
-        run: |
-          Write-Host "=== Installing Minecraft Launcher ===" -ForegroundColor Cyan
-
-          $mcUrl = "https://launcher.mojang.com/download/MinecraftInstaller.msi"
-          $installerPath = "$env:TEMP\minecraft.msi"
-
-          Invoke-WebRequest -Uri $mcUrl -OutFile $installerPath
-          Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$installerPath`" /quiet" -Wait -NoNewWindow
-          Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
-
-          # Copy Mesa DLLs vào .minecraft
-          $mesaDll = Get-ChildItem "C:\Mesa" -Recurse -Filter "opengl32.dll" -ErrorAction SilentlyContinue |
-                     Select-Object -First 1
-
-          if ($mesaDll) {
-              $mcDir = "$env:APPDATA\.minecraft"
-              New-Item -ItemType Directory -Path $mcDir -Force | Out-Null
-              Copy-Item "$($mesaDll.DirectoryName)\*.dll" $mcDir -Force -ErrorAction SilentlyContinue
-          }
-
-          Write-Host "Minecraft Launcher installed." -ForegroundColor Green
 
       # ============================================================
       # INSTALL 7-ZIP
@@ -155,98 +106,150 @@ jobs:
         shell: powershell
         continue-on-error: true
         run: |
+          Write-Host "Installing 7-Zip..." -ForegroundColor Green
           $zipUrl = "https://www.7-zip.org/a/7z2409-x64.exe"
           $installerPath = "$env:TEMP\7z-installer.exe"
           Invoke-WebRequest -Uri $zipUrl -OutFile $installerPath
           Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait -NoNewWindow
           Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+          Write-Host "7-Zip installed." -ForegroundColor Green
 
       # ============================================================
-      # INSTALL RUSTDESK
+      # INSTALL RUSTDESK (FAST METHOD)
       # ============================================================
       - name: Install RustDesk
         shell: powershell
+        timeout-minutes: 5
         run: |
-          Write-Host "=== Installing RustDesk ===" -ForegroundColor Cyan
+          Write-Host "=== Installing RustDesk (fast) ===" -ForegroundColor Cyan
 
+          # Tải installer
           $rustdeskUrl = "https://github.com/rustdesk/rustdesk/releases/download/1.3.7/rustdesk-1.3.7-x86_64.exe"
-          $rustdeskPath = "$env:TEMP\rustdesk-installer.exe"
+          $rustdeskInstaller = "$env:TEMP\rustdesk-installer.exe"
 
-          Write-Host "Downloading RustDesk..."
-          Invoke-WebRequest -Uri $rustdeskUrl -OutFile $rustdeskPath
-
-          Write-Host "Installing RustDesk..."
-          Start-Process -FilePath $rustdeskPath -ArgumentList "--silent-install" -Wait -NoNewWindow
-          Start-Sleep -Seconds 15
-
-          Remove-Item $rustdeskPath -Force -ErrorAction SilentlyContinue
+          Write-Host "Downloading RustDesk installer..."
+          Invoke-WebRequest -Uri $rustdeskUrl -OutFile $rustdeskInstaller -UseBasicParsing
 
           # AV exclusion
-          Add-MpPreference -ExclusionPath "C:\Program Files\RustDesk" -ErrorAction SilentlyContinue
+          Add-MpPreference -ExclusionPath "$env:TEMP" -ErrorAction SilentlyContinue
 
-          # Verify install
+          # Chạy silent install KHÔNG chờ
+          Write-Host "Starting silent install (non-blocking)..."
+          Start-Process -FilePath $rustdeskInstaller -ArgumentList "--silent-install" -WindowStyle Hidden | Out-Null
+
+          # Đợi tối đa 90 giây, kiểm tra file cài đặt
+          Write-Host "Waiting for installation (max 90s)..."
+          $installed = $false
+          $elapsed = 0
+
+          while ($elapsed -lt 90) {
+              Start-Sleep -Seconds 5
+              $elapsed += 5
+
+              # Kiểm tra file cài đặt đã xuất hiện chưa
+              if (Test-Path "C:\Program Files\RustDesk\rustdesk.exe") {
+                  Write-Host "RustDesk executable found after ${elapsed}s." -ForegroundColor Green
+                  $installed = $true
+                  break
+              }
+              Write-Host "  Waiting... (${elapsed}s)"
+          }
+
+          # Kill tất cả rustdesk process đang chờ (nếu có)
+          Write-Host "Cleaning up any pending RustDesk processes..."
+          Get-Process -Name "rustdesk" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Get-Process -Name "rustdesk-installer" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+
+          # Verify
           $rustdeskExe = "C:\Program Files\RustDesk\rustdesk.exe"
-          if (-not (Test-Path $rustdeskExe)) {
-              Write-Error "RustDesk not found at $rustdeskExe"
+          if (Test-Path $rustdeskExe) {
+              Write-Host "RustDesk installed successfully!" -ForegroundColor Green
+              & $rustdeskExe --version
+          } else {
+              Write-Error "RustDesk installation failed - exe not found."
               exit 1
           }
 
-          Write-Host "RustDesk installed." -ForegroundColor Green
-          & $rustdeskExe --version
+          # AV exclusion for installed app
+          Add-MpPreference -ExclusionPath "C:\Program Files\RustDesk" -ErrorAction SilentlyContinue
 
-      - name: Configure RustDesk Password
+          # Cleanup installer
+          Remove-Item $rustdeskInstaller -Force -ErrorAction SilentlyContinue
+
+      - name: Configure RustDesk Service + Password
         shell: powershell
+        timeout-minutes: 3
         run: |
-          Write-Host "=== Setting RustDesk permanent password ===" -ForegroundColor Cyan
+          Write-Host "=== Configuring RustDesk service ===" -ForegroundColor Cyan
 
           $rustdeskExe = "C:\Program Files\RustDesk\rustdesk.exe"
           $Password = "P@ssw0rd!"
 
-          # Đảm bảo RustDesk service đang chạy
-          Get-Service -Name "RustDesk" -ErrorAction SilentlyContinue | Start-Service -ErrorAction SilentlyContinue
+          # Cài RustDesk như Windows Service
+          Write-Host "Installing RustDesk service..."
+          & $rustdeskExe --install-service
           Start-Sleep -Seconds 10
 
-          # Đợi RustDesk khởi động
-          Start-Process -FilePath $rustdeskExe -ArgumentList "--password", $Password -Wait -NoNewWindow
+          # Đảm bảo service đang chạy
+          $svc = Get-Service -Name "RustDesk" -ErrorAction SilentlyContinue
+          if ($svc -and $svc.Status -ne "Running") {
+              Start-Service -Name "RustDesk" -ErrorAction SilentlyContinue
+              Start-Sleep -Seconds 5
+          }
+
+          # Set password cố định
+          Write-Host "Setting RustDesk password..."
+          & $rustdeskExe --password $Password
           Start-Sleep -Seconds 5
 
-          Write-Host "Password set: $Password" -ForegroundColor Green
+          # Verify service
+          $svc = Get-Service -Name "RustDesk" -ErrorAction SilentlyContinue
+          if ($svc) {
+              Write-Host "RustDesk service status: $($svc.Status)" -ForegroundColor Green
+          } else {
+              Write-Host "RustDesk service not found (may still work as process)" -ForegroundColor Yellow
+          }
+
+          Write-Host "Password: $Password" -ForegroundColor Green
 
       - name: Get RustDesk ID
         shell: powershell
+        timeout-minutes: 2
         run: |
           Write-Host "=== Getting RustDesk ID ===" -ForegroundColor Cyan
 
           $rustdeskExe = "C:\Program Files\RustDesk\rustdesk.exe"
-          $maxAttempts = 15
+          $maxAttempts = 10
           $rustdeskId = $null
 
           for ($i = 1; $i -le $maxAttempts; $i++) {
               try {
-                  $output = & $rustdeskExe --get-id 2>&1
-                  if ($output -match "^\d{9,10}$") {
-                      $rustdeskId = $output.Trim()
+                  $output = & $rustdeskExe --get-id 2>&1 | Out-String
+                  if ($output -match "(\d{9,10})") {
+                      $rustdeskId = $matches[1]
                       break
                   }
-              } catch {
-                  # retry
-              }
+              } catch { }
+
               Write-Host "Waiting for RustDesk ID... ($i/$maxAttempts)"
-              Start-Sleep -Seconds 2
+              Start-Sleep -Seconds 3
           }
 
+          # Fallback: đọc file config
           if (-not $rustdeskId) {
-              Write-Host "Cannot get RustDesk ID. Trying config file..." -ForegroundColor Yellow
-              # Đọc từ file config
-              $configFiles = @(
+              Write-Host "Trying config file..." -ForegroundColor Yellow
+              $configPaths = @(
                   "C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config\RustDesk.toml",
-                  "$env:APPDATA\RustDesk\config\RustDesk.toml"
+                  "$env:APPDATA\RustDesk\config\RustDesk.toml",
+                  "C:\Windows\System32\config\systemprofile\AppData\Roaming\RustDesk\config\RustDesk.toml"
               )
-              foreach ($f in $configFiles) {
-                  if (Test-Path $f) {
-                      $content = Get-Content $f -Raw
+
+              foreach ($path in $configPaths) {
+                  if (Test-Path $path) {
+                      $content = Get-Content $path -Raw -ErrorAction SilentlyContinue
                       if ($content -match 'id\s*=\s*"(\d+)"') {
                           $rustdeskId = $matches[1]
+                          Write-Host "Found ID in: $path" -ForegroundColor Green
                           break
                       }
                   }
@@ -262,7 +265,7 @@ jobs:
           }
 
       # ============================================================
-      # INSTALL BORE (BACKUP TUNNEL)
+      # INSTALL BORE (RDP BACKUP)
       # ============================================================
       - name: Install Bore
         shell: powershell
@@ -339,15 +342,11 @@ jobs:
           Write-Host ""
           Write-Host "  1) Download RustDesk client:" -ForegroundColor White
           Write-Host "     https://rustdesk.com/download" -ForegroundColor Cyan
-          Write-Host "     - Or use RD Client on phone" -ForegroundColor White
           Write-Host ""
           Write-Host "  2) Enter RustDesk ID: $env:RUSTDESK_ID" -ForegroundColor White
           Write-Host "  3) Enter Password: P@ssw0rd!" -ForegroundColor White
           Write-Host "  4) Click Connect → Full screen!" -ForegroundColor White
           Write-Host ""
-          Write-Host "  Mesa3D:   Installed (software OpenGL)" -ForegroundColor Green
-          Write-Host "  Java 21:  Installed (for Minecraft)" -ForegroundColor Green
-          Write-Host "  Minecraft: Installed" -ForegroundColor Green
           Write-Host "==========================================================" -ForegroundColor Cyan
           Write-Host ""
 
@@ -363,13 +362,18 @@ jobs:
               Write-Host ""
               Write-Host "=== Heartbeat #$counter - $now ===" -ForegroundColor Cyan
 
-              # Check RustDesk service
-              $rustService = Get-Service -Name "RustDesk" -ErrorAction SilentlyContinue
-              if ($rustService -and $rustService.Status -eq "Running") {
+              # Check RustDesk
+              $svc = Get-Service -Name "RustDesk" -ErrorAction SilentlyContinue
+              if ($svc -and $svc.Status -eq "Running") {
                   Write-Host "RustDesk: RUNNING (ID: $env:RUSTDESK_ID)" -ForegroundColor Green
               } else {
-                  Write-Host "RustDesk: NOT RUNNING - Restarting..." -ForegroundColor Red
-                  Start-Service -Name "RustDesk" -ErrorAction SilentlyContinue
+                  $rdProc = Get-Process -Name "rustdesk" -ErrorAction SilentlyContinue
+                  if ($rdProc) {
+                      Write-Host "RustDesk: RUNNING (process, ID: $env:RUSTDESK_ID)" -ForegroundColor Green
+                  } else {
+                      Write-Host "RustDesk: NOT RUNNING - Restarting service..." -ForegroundColor Red
+                      Start-Service -Name "RustDesk" -ErrorAction SilentlyContinue
+                  }
               }
 
               # Check Bore
@@ -393,7 +397,7 @@ jobs:
                   Write-Host "Bore: RUNNING ($boreUrl)" -ForegroundColor Green
               }
 
-              # Trigger backup
+              # Trigger backup sau 4h55m
               if ($now -ge $triggerBackup) {
                   Write-Host ""
                   Write-Host "*** TRIGGERING BACKUP WORKFLOW ***" -ForegroundColor Yellow
@@ -407,7 +411,7 @@ jobs:
 
                   if ($success) {
                       $triggerBackup = (Get-Date).AddYears(1)
-                      Write-Host "Backup triggered successfully." -ForegroundColor Green
+                      Write-Host "Backup triggered." -ForegroundColor Green
                   } else {
                       Write-Host "Failed. Retry in 60s..." -ForegroundColor Red
                       Start-Sleep -Seconds 60
