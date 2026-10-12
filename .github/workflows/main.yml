@@ -109,4 +109,176 @@ jobs:
               }
           }
 
-          Get
+          Get-Process -Name "rustdesk" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Get-Process -Name "rustdesk-installer" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+
+          $rustdeskExe = "C:\Program Files\RustDesk\rustdesk.exe"
+          if (-not (Test-Path $rustdeskExe)) {
+              Write-Error "RustDesk install failed."
+              exit 1
+          }
+
+          Add-MpPreference -ExclusionPath "C:\Program Files\RustDesk" -ErrorAction SilentlyContinue
+          Remove-Item $rustdeskInstaller -Force -ErrorAction SilentlyContinue
+
+      - name: Configure RustDesk
+        shell: powershell
+        timeout-minutes: 3
+        run: |
+          $rustdeskExe = "C:\Program Files\RustDesk\rustdesk.exe"
+          $Password = "P@ssw0rd!"
+
+          & $rustdeskExe --install-service
+          Start-Sleep -Seconds 10
+
+          $svc = Get-Service -Name "RustDesk" -ErrorAction SilentlyContinue
+          if ($svc -and $svc.Status -ne "Running") {
+              Start-Service -Name "RustDesk"
+              Start-Sleep -Seconds 5
+          }
+
+          & $rustdeskExe --password $Password
+          Start-Sleep -Seconds 5
+
+          Write-Host "RustDesk service: $((Get-Service -Name RustDesk -ErrorAction SilentlyContinue).Status)" -ForegroundColor Green
+
+      - name: Get RustDesk ID
+        shell: powershell
+        id: get_id
+        run: |
+          $rustdeskExe = "C:\Program Files\RustDesk\rustdesk.exe"
+          $rustdeskId = $null
+
+          for ($i = 1; $i -le 10; $i++) {
+              try {
+                  $output = & $rustdeskExe --get-id 2>&1 | Out-String
+                  if ($output -match "(\d{9,10})") {
+                      $rustdeskId = $matches[1]
+                      break
+                  }
+              } catch { }
+              Start-Sleep -Seconds 3
+          }
+
+          if (-not $rustdeskId) {
+              $configPaths = @(
+                  "C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config\RustDesk.toml",
+                  "$env:APPDATA\RustDesk\config\RustDesk.toml",
+                  "C:\Windows\System32\config\systemprofile\AppData\Roaming\RustDesk\config\RustDesk.toml"
+              )
+              foreach ($path in $configPaths) {
+                  if (Test-Path $path) {
+                      $content = Get-Content $path -Raw
+                      if ($content -match 'id\s*=\s*"(\d+)"') {
+                          $rustdeskId = $matches[1]
+                          break
+                      }
+                  }
+              }
+          }
+
+          if (-not $rustdeskId) {
+              Write-Error "Cannot get RustDesk ID"
+              exit 1
+          }
+
+          Write-Host "RustDesk ID: $rustdeskId" -ForegroundColor Green
+          "RUSTDESK_ID=$rustdeskId" >> $env:GITHUB_ENV
+          "RUSTDESK_ID=$rustdeskId" >> $env:GITHUB_OUTPUT
+
+      # ============================================================
+      # BÁO VỀ WEB: PROVISION COMPLETE
+      # ============================================================
+      - name: Notify Web Backend
+        shell: powershell
+        env:
+          PROVISION_SECRET: ${{ secrets.PROVISION_SECRET }}
+          WEB_URL: ${{ secrets.WEB_URL }}
+        run: |
+          $orderCode = "${{ github.event.inputs.order_code }}"
+          $rustdeskId = $env:RUSTDESK_ID
+
+          Write-Host "Notifying web: $WEB_URL/api/order/$orderCode/provision" -ForegroundColor Cyan
+
+          $body = @{
+              rustdesk_id       = $rustdeskId
+              rustdesk_password = "P@ssw0rd!"
+              secret            = $env:PROVISION_SECRET
+          } | ConvertTo-Json
+
+          try {
+              $response = Invoke-RestMethod `
+                  -Uri "$env:WEB_URL/api/order/$orderCode/provision" `
+                  -Method Post `
+                  -Body $body `
+                  -ContentType "application/json" `
+                  -TimeoutSec 30
+              Write-Host "Backend notified: $($response | ConvertTo-Json)" -ForegroundColor Green
+          } catch {
+              Write-Host "Failed to notify backend: $_" -ForegroundColor Red
+              Write-Host "Workflow continues anyway..." -ForegroundColor Yellow
+          }
+
+      # ============================================================
+      # KEEP ALIVE (5 giờ + trigger backup)
+      # ============================================================
+      - name: Keep Session Alive
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          $instance      = "${{ github.event.inputs.instance_number }}"
+          $repo          = "${{ github.repository }}"
+          $ref           = "${{ github.ref_name }}"
+          $hours         = [int]"${{ github.event.inputs.hours }}"
+          $sleepSeconds  = 60
+
+          $triggerBackup = (Get-Date).AddMinutes($hours * 60 - 5)
+          $endSession    = (Get-Date).AddMinutes($hours * 60 + 10)
+          $counter       = 0
+
+          Write-Host "=== SESSION STARTED ===" -ForegroundColor Green
+          Write-Host "Rental: $hours hours" -ForegroundColor Yellow
+          Write-Host "RustDesk ID: $env:RUSTDESK_ID" -ForegroundColor Cyan
+          Write-Host "Password: P@ssw0rd!" -ForegroundColor Cyan
+
+          while ($true) {
+              $counter++
+              $now = Get-Date
+
+              Write-Host ""
+              Write-Host "=== Heartbeat #$counter - $now ===" -ForegroundColor Cyan
+              Write-Host "Order: $instance | Hours: $hours" -ForegroundColor Yellow
+
+              $svc = Get-Service -Name "RustDesk" -ErrorAction SilentlyContinue
+              if ($svc -and $svc.Status -eq "Running") {
+                  Write-Host "RustDesk: RUNNING" -ForegroundColor Green
+              } else {
+                  Write-Host "RustDesk: NOT RUNNING - restarting..." -ForegroundColor Red
+                  Start-Service -Name "RustDesk" -ErrorAction SilentlyContinue
+              }
+
+              if ($now -ge $triggerBackup) {
+                  Write-Host "*** Triggering backup ***" -ForegroundColor Yellow
+                  $success = $false
+                  for ($i = 1; $i -le 3; $i++) {
+                      gh workflow run backup.yml --repo $repo --ref $ref -f "instance_number=$instance"
+                      if ($LASTEXITCODE -eq 0) { $success = $true; break }
+                      Start-Sleep -Seconds 10
+                  }
+                  if ($success) {
+                      $triggerBackup = (Get-Date).AddYears(1)
+                      Write-Host "Backup triggered." -ForegroundColor Green
+                  } else {
+                      Start-Sleep -Seconds 60
+                      continue
+                  }
+              }
+
+              if ($now -ge $endSession) {
+                  Write-Host "Session ended." -ForegroundColor Yellow
+                  exit 0
+              }
+
+              Start-Sleep -Seconds $sleepSeconds
+          }
