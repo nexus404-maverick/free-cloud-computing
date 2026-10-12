@@ -4,9 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       instance_number:
-        description: 'Instance Number (1-10)'
+        description: 'Order Code'
+        required: true
+        type: string
+      hours:
+        description: 'Rental hours (1-5)'
         required: true
         default: '1'
+        type: string
+      order_code:
+        description: 'Order Code (same as instance_number)'
+        required: true
         type: string
 
 permissions:
@@ -25,406 +33,80 @@ jobs:
       - name: System Information
         shell: powershell
         run: |
-          Write-Host "=== LAYER7 STORE RDP ===" -ForegroundColor Green
-          Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsArchitecture
-          Get-CimInstance Win32_ComputerSystem | Select-Object TotalPhysicalMemory
-          Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores
+          Write-Host "=== HIEPDEV CLOUD PC ===" -ForegroundColor Green
+          Write-Host "Order: ${{ github.event.inputs.order_code }}" -ForegroundColor Yellow
+          Write-Host "Hours: ${{ github.event.inputs.hours }}" -ForegroundColor Yellow
+          Get-ComputerInfo | Select-Object WindowsProductName, OsArchitecture
 
+      # ============================================================
+      # ENABLE RDP
+      # ============================================================
       - name: Enable RDP
         shell: powershell
         run: |
-          Write-Host "Enabling RDP..." -ForegroundColor Green
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 1
           Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'
           Write-Host "RDP enabled." -ForegroundColor Green
 
-      - name: Create User Layer7Store
+      # ============================================================
+      # CREATE USER
+      # ============================================================
+      - name: Create User
         shell: powershell
         run: |
-          Write-Host "Creating user Layer7Store..." -ForegroundColor Green
           $Username = "Layer7Store"
           $Password = ConvertTo-SecureString "P@ssw0rd!" -AsPlainText -Force
           $User = Get-LocalUser -Name $Username -ErrorAction SilentlyContinue
           if ($null -eq $User) {
               New-LocalUser -Name $Username -Password $Password -PasswordNeverExpires -AccountNeverExpires -FullName "Layer7 Store"
-              Write-Host "User created." -ForegroundColor Green
           } else {
               Set-LocalUser -Name $Username -Password $Password
-              Write-Host "Password updated." -ForegroundColor Yellow
           }
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $Username -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Administrators" -Member $Username -ErrorAction SilentlyContinue
-          Write-Host "Username: Layer7Store / Password: P@ssw0rd!" -ForegroundColor Yellow
+          Write-Host "User: $Username / Password: P@ssw0rd!" -ForegroundColor Green
 
       # ============================================================
-      # INSTALL MESA3D (Software OpenGL)
+      # INSTALL CHROME (nhanh)
       # ============================================================
-      - name: Install Mesa3D
-        shell: powershell
-        continue-on-error: true
-        run: |
-          Write-Host "=== Installing Mesa3D ===" -ForegroundColor Cyan
-
-          $blocklistKey = "HKLM:\SYSTEM\CurrentControlSet\Control\CI\Config"
-          if (Test-Path $blocklistKey) {
-              Set-ItemProperty -Path $blocklistKey -Name "VulnerableDriverBlocklistEnable" -Value 0 -ErrorAction SilentlyContinue
-          }
-
-          New-Item -ItemType Directory -Path "C:\Mesa" -Force | Out-Null
-          $mesaFile = "C:\Mesa\mesa.7z"
-
-          $mesaUrl = "https://github.com/pal1000/mesa-dist-win/releases/download/24.3.4/mesa3d-24.3.4-release-msvc.7z"
-          try {
-              Invoke-WebRequest -Uri $mesaUrl -OutFile $mesaFile -ErrorAction Stop
-          } catch {
-              Write-Host "Mesa download failed, skipping..." -ForegroundColor Yellow
-              exit 0
-          }
-
-          Invoke-WebRequest -Uri "https://www.7-zip.org/a/7zr.exe" -OutFile "C:\Mesa\7zr.exe"
-          & "C:\Mesa\7zr.exe" x $mesaFile -oC:\Mesa -y | Out-Null
-
-          $mesaDll = Get-ChildItem "C:\Mesa" -Recurse -Filter "opengl32.dll" -ErrorAction SilentlyContinue |
-                     Where-Object { $_.DirectoryName -match "x64" } |
-                     Select-Object -First 1
-
-          if ($mesaDll) {
-              Copy-Item "C:\Windows\System32\opengl32.dll" "C:\Windows\System32\opengl32.dll.backup" -Force -ErrorAction SilentlyContinue
-              Copy-Item $mesaDll.FullName "C:\Windows\System32\opengl32.dll" -Force
-              [System.Environment]::SetEnvironmentVariable("GALLIUM_DRIVER", "llvmpipe", "Machine")
-              [System.Environment]::SetEnvironmentVariable("LIBGL_ALWAYS_SOFTWARE", "1", "Machine")
-              Write-Host "Mesa3D installed." -ForegroundColor Green
-          } else {
-              Write-Host "Mesa opengl32.dll not found, skipping." -ForegroundColor Yellow
-          }
-
-      # ============================================================
-      # INSTALL 7-ZIP
-      # ============================================================
-      - name: Install 7-Zip
-        shell: powershell
-        continue-on-error: true
-        run: |
-          Write-Host "Installing 7-Zip..." -ForegroundColor Green
-          $zipUrl = "https://www.7-zip.org/a/7z2409-x64.exe"
-          $installerPath = "$env:TEMP\7z-installer.exe"
-          Invoke-WebRequest -Uri $zipUrl -OutFile $installerPath
-          Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait -NoNewWindow
-          Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
-          Write-Host "7-Zip installed." -ForegroundColor Green
-
-      # ============================================================
-      # INSTALL RUSTDESK (FAST METHOD)
-      # ============================================================
-      - name: Install RustDesk
-        shell: powershell
-        timeout-minutes: 5
-        run: |
-          Write-Host "=== Installing RustDesk (fast) ===" -ForegroundColor Cyan
-
-          # Tải installer
-          $rustdeskUrl = "https://github.com/rustdesk/rustdesk/releases/download/1.3.7/rustdesk-1.3.7-x86_64.exe"
-          $rustdeskInstaller = "$env:TEMP\rustdesk-installer.exe"
-
-          Write-Host "Downloading RustDesk installer..."
-          Invoke-WebRequest -Uri $rustdeskUrl -OutFile $rustdeskInstaller -UseBasicParsing
-
-          # AV exclusion
-          Add-MpPreference -ExclusionPath "$env:TEMP" -ErrorAction SilentlyContinue
-
-          # Chạy silent install KHÔNG chờ
-          Write-Host "Starting silent install (non-blocking)..."
-          Start-Process -FilePath $rustdeskInstaller -ArgumentList "--silent-install" -WindowStyle Hidden | Out-Null
-
-          # Đợi tối đa 90 giây, kiểm tra file cài đặt
-          Write-Host "Waiting for installation (max 90s)..."
-          $installed = $false
-          $elapsed = 0
-
-          while ($elapsed -lt 90) {
-              Start-Sleep -Seconds 5
-              $elapsed += 5
-
-              # Kiểm tra file cài đặt đã xuất hiện chưa
-              if (Test-Path "C:\Program Files\RustDesk\rustdesk.exe") {
-                  Write-Host "RustDesk executable found after ${elapsed}s." -ForegroundColor Green
-                  $installed = $true
-                  break
-              }
-              Write-Host "  Waiting... (${elapsed}s)"
-          }
-
-          # Kill tất cả rustdesk process đang chờ (nếu có)
-          Write-Host "Cleaning up any pending RustDesk processes..."
-          Get-Process -Name "rustdesk" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-          Get-Process -Name "rustdesk-installer" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-
-          # Verify
-          $rustdeskExe = "C:\Program Files\RustDesk\rustdesk.exe"
-          if (Test-Path $rustdeskExe) {
-              Write-Host "RustDesk installed successfully!" -ForegroundColor Green
-              & $rustdeskExe --version
-          } else {
-              Write-Error "RustDesk installation failed - exe not found."
-              exit 1
-          }
-
-          # AV exclusion for installed app
-          Add-MpPreference -ExclusionPath "C:\Program Files\RustDesk" -ErrorAction SilentlyContinue
-
-          # Cleanup installer
-          Remove-Item $rustdeskInstaller -Force -ErrorAction SilentlyContinue
-
-      - name: Configure RustDesk Service + Password
+      - name: Install Chrome
         shell: powershell
         timeout-minutes: 3
         run: |
-          Write-Host "=== Configuring RustDesk service ===" -ForegroundColor Cyan
+          Write-Host "Installing Chrome..." -ForegroundColor Cyan
+          $chromeUrl = "https://dl.google.com/chrome/install/latest/chrome_installer.exe"
+          $installerPath = "$env:TEMP\chrome_installer.exe"
+          Invoke-WebRequest -Uri $chromeUrl -OutFile $installerPath -UseBasicParsing
+          Start-Process -FilePath $installerPath -ArgumentList "/silent /install" -Wait -NoNewWindow
+          Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+          Write-Host "Chrome installed." -ForegroundColor Green
 
-          $rustdeskExe = "C:\Program Files\RustDesk\rustdesk.exe"
-          $Password = "P@ssw0rd!"
+      # ============================================================
+      # INSTALL RUSTDESK (nhanh nhất)
+      # ============================================================
+      - name: Install RustDesk
+        shell: powershell
+        timeout-minutes: 3
+        run: |
+          Write-Host "=== Installing RustDesk ===" -ForegroundColor Cyan
+          $rustdeskUrl = "https://github.com/rustdesk/rustdesk/releases/download/1.3.7/rustdesk-1.3.7-x86_64.exe"
+          $rustdeskInstaller = "$env:TEMP\rustdesk-installer.exe"
 
-          # Cài RustDesk như Windows Service
-          Write-Host "Installing RustDesk service..."
-          & $rustdeskExe --install-service
-          Start-Sleep -Seconds 10
+          Invoke-WebRequest -Uri $rustdeskUrl -OutFile $rustdeskInstaller -UseBasicParsing
+          Add-MpPreference -ExclusionPath "$env:TEMP" -ErrorAction SilentlyContinue
 
-          # Đảm bảo service đang chạy
-          $svc = Get-Service -Name "RustDesk" -ErrorAction SilentlyContinue
-          if ($svc -and $svc.Status -ne "Running") {
-              Start-Service -Name "RustDesk" -ErrorAction SilentlyContinue
+          Write-Host "Silent install (non-blocking)..."
+          Start-Process -FilePath $rustdeskInstaller -ArgumentList "--silent-install" -WindowStyle Hidden | Out-Null
+
+          $elapsed = 0
+          while ($elapsed -lt 90) {
               Start-Sleep -Seconds 5
-          }
-
-          # Set password cố định
-          Write-Host "Setting RustDesk password..."
-          & $rustdeskExe --password $Password
-          Start-Sleep -Seconds 5
-
-          # Verify service
-          $svc = Get-Service -Name "RustDesk" -ErrorAction SilentlyContinue
-          if ($svc) {
-              Write-Host "RustDesk service status: $($svc.Status)" -ForegroundColor Green
-          } else {
-              Write-Host "RustDesk service not found (may still work as process)" -ForegroundColor Yellow
-          }
-
-          Write-Host "Password: $Password" -ForegroundColor Green
-
-      - name: Get RustDesk ID
-        shell: powershell
-        timeout-minutes: 2
-        run: |
-          Write-Host "=== Getting RustDesk ID ===" -ForegroundColor Cyan
-
-          $rustdeskExe = "C:\Program Files\RustDesk\rustdesk.exe"
-          $maxAttempts = 10
-          $rustdeskId = $null
-
-          for ($i = 1; $i -le $maxAttempts; $i++) {
-              try {
-                  $output = & $rustdeskExe --get-id 2>&1 | Out-String
-                  if ($output -match "(\d{9,10})") {
-                      $rustdeskId = $matches[1]
-                      break
-                  }
-              } catch { }
-
-              Write-Host "Waiting for RustDesk ID... ($i/$maxAttempts)"
-              Start-Sleep -Seconds 3
-          }
-
-          # Fallback: đọc file config
-          if (-not $rustdeskId) {
-              Write-Host "Trying config file..." -ForegroundColor Yellow
-              $configPaths = @(
-                  "C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config\RustDesk.toml",
-                  "$env:APPDATA\RustDesk\config\RustDesk.toml",
-                  "C:\Windows\System32\config\systemprofile\AppData\Roaming\RustDesk\config\RustDesk.toml"
-              )
-
-              foreach ($path in $configPaths) {
-                  if (Test-Path $path) {
-                      $content = Get-Content $path -Raw -ErrorAction SilentlyContinue
-                      if ($content -match 'id\s*=\s*"(\d+)"') {
-                          $rustdeskId = $matches[1]
-                          Write-Host "Found ID in: $path" -ForegroundColor Green
-                          break
-                      }
-                  }
+              $elapsed += 5
+              if (Test-Path "C:\Program Files\RustDesk\rustdesk.exe") {
+                  Write-Host "RustDesk found at ${elapsed}s." -ForegroundColor Green
+                  break
               }
           }
 
-          if ($rustdeskId) {
-              Write-Host "RustDesk ID: $rustdeskId" -ForegroundColor Green
-              "RUSTDESK_ID=$rustdeskId" >> $env:GITHUB_ENV
-          } else {
-              Write-Host "Failed to get RustDesk ID." -ForegroundColor Red
-              "RUSTDESK_ID=NOT_FOUND" >> $env:GITHUB_ENV
-          }
-
-      # ============================================================
-      # INSTALL BORE (RDP BACKUP)
-      # ============================================================
-      - name: Install Bore
-        shell: powershell
-        continue-on-error: true
-        run: |
-          Write-Host "Downloading Bore..." -ForegroundColor Green
-          $boreUrl = "https://github.com/ekzhang/bore/releases/download/v0.5.3/bore-v0.5.3-x86_64-pc-windows-msvc.zip"
-          $zipPath = "$env:TEMP\bore.zip"
-          Invoke-WebRequest -Uri $boreUrl -OutFile $zipPath
-          Expand-Archive -Path $zipPath -DestinationPath "C:\bore" -Force
-          Remove-Item $zipPath -Force
-          Add-MpPreference -ExclusionPath "C:\bore" -ErrorAction SilentlyContinue
-
-      # ============================================================
-      # CONNECTION INFO + KEEP ALIVE
-      # ============================================================
-      - name: Connection Info + Keep Session Alive
-        shell: powershell
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-        run: |
-          $instance      = "${{ github.event.inputs.instance_number }}"
-          $repo          = "${{ github.repository }}"
-          $ref           = "${{ github.ref_name }}"
-          $sleepSeconds  = 60
-          $triggerBackup = (Get-Date).AddMinutes(295)
-          $endSession    = (Get-Date).AddMinutes(310)
-          $counter       = 0
-
-          # Start Bore như backup
-          $boreExe = (Get-ChildItem "C:\bore\*.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
-          $boreLog = "$env:TEMP\bore.log"
-          $boreUrl = "N/A"
-
-          if ($boreExe) {
-              Get-Process -Name "bore" -ErrorAction SilentlyContinue | Stop-Process -Force
-              Start-Sleep -Seconds 2
-
-              Start-Process -FilePath $boreExe `
-                  -ArgumentList "local 3389 --to bore.pub" `
-                  -WindowStyle Hidden `
-                  -RedirectStandardOutput $boreLog `
-                  -RedirectStandardError "$env:TEMP\bore-err.log"
-
-              Start-Sleep -Seconds 15
-
-              if (Test-Path $boreLog) {
-                  $content = Get-Content $boreLog -Raw
-                  if ($content -match "listening at (bore\.pub:\d+)") {
-                      $boreUrl = $matches[1]
-                  }
-              }
-          }
-
-          # ============================================================
-          # HIỂN THỊ THÔNG TIN KẾT NỐI
-          # ============================================================
-          Write-Host ""
-          Write-Host "==========================================================" -ForegroundColor Cyan
-          Write-Host "           LAYER7 STORE RDP ACCESS" -ForegroundColor Cyan
-          Write-Host "==========================================================" -ForegroundColor Cyan
-          Write-Host ""
-          Write-Host "  === PRIMARY (RustDesk) ===" -ForegroundColor Green
-          Write-Host "  RustDesk ID:  $env:RUSTDESK_ID" -ForegroundColor White
-          Write-Host "  Password:     P@ssw0rd!" -ForegroundColor White
-          Write-Host ""
-          Write-Host "  === BACKUP (Bore + RDP) ===" -ForegroundColor Yellow
-          Write-Host "  Address:      $boreUrl" -ForegroundColor White
-          Write-Host "  Username:     Layer7Store" -ForegroundColor White
-          Write-Host "  Password:     P@ssw0rd!" -ForegroundColor White
-          Write-Host ""
-          Write-Host "==========================================================" -ForegroundColor Cyan
-          Write-Host "  HOW TO CONNECT:" -ForegroundColor Yellow
-          Write-Host ""
-          Write-Host "  1) Download RustDesk client:" -ForegroundColor White
-          Write-Host "     https://rustdesk.com/download" -ForegroundColor Cyan
-          Write-Host ""
-          Write-Host "  2) Enter RustDesk ID: $env:RUSTDESK_ID" -ForegroundColor White
-          Write-Host "  3) Enter Password: P@ssw0rd!" -ForegroundColor White
-          Write-Host "  4) Click Connect → Full screen!" -ForegroundColor White
-          Write-Host ""
-          Write-Host "==========================================================" -ForegroundColor Cyan
-          Write-Host ""
-
-          # ============================================================
-          # KEEP ALIVE LOOP
-          # ============================================================
-          Write-Host "=== SESSION ACTIVE ===" -ForegroundColor Green
-
-          while ($true) {
-              $counter++
-              $now = Get-Date
-
-              Write-Host ""
-              Write-Host "=== Heartbeat #$counter - $now ===" -ForegroundColor Cyan
-
-              # Check RustDesk
-              $svc = Get-Service -Name "RustDesk" -ErrorAction SilentlyContinue
-              if ($svc -and $svc.Status -eq "Running") {
-                  Write-Host "RustDesk: RUNNING (ID: $env:RUSTDESK_ID)" -ForegroundColor Green
-              } else {
-                  $rdProc = Get-Process -Name "rustdesk" -ErrorAction SilentlyContinue
-                  if ($rdProc) {
-                      Write-Host "RustDesk: RUNNING (process, ID: $env:RUSTDESK_ID)" -ForegroundColor Green
-                  } else {
-                      Write-Host "RustDesk: NOT RUNNING - Restarting service..." -ForegroundColor Red
-                      Start-Service -Name "RustDesk" -ErrorAction SilentlyContinue
-                  }
-              }
-
-              # Check Bore
-              $boreProc = Get-Process -Name "bore" -ErrorAction SilentlyContinue
-              if ($null -eq $boreProc -and $boreExe) {
-                  Write-Host "Bore: DOWN - Restarting..." -ForegroundColor Red
-                  Start-Process -FilePath $boreExe `
-                      -ArgumentList "local 3389 --to bore.pub" `
-                      -WindowStyle Hidden `
-                      -RedirectStandardOutput $boreLog `
-                      -RedirectStandardError "$env:TEMP\bore-err.log"
-                  Start-Sleep -Seconds 15
-                  if (Test-Path $boreLog) {
-                      $content = Get-Content $boreLog -Raw
-                      if ($content -match "listening at (bore\.pub:\d+)") {
-                          $boreUrl = $matches[1]
-                          Write-Host "Bore NEW URL: $boreUrl" -ForegroundColor Yellow
-                      }
-                  }
-              } elseif ($boreProc) {
-                  Write-Host "Bore: RUNNING ($boreUrl)" -ForegroundColor Green
-              }
-
-              # Trigger backup sau 4h55m
-              if ($now -ge $triggerBackup) {
-                  Write-Host ""
-                  Write-Host "*** TRIGGERING BACKUP WORKFLOW ***" -ForegroundColor Yellow
-
-                  $success = $false
-                  for ($i = 1; $i -le 3; $i++) {
-                      gh workflow run backup.yml --repo $repo --ref $ref -f "instance_number=$instance"
-                      if ($LASTEXITCODE -eq 0) { $success = $true; break }
-                      Start-Sleep -Seconds 10
-                  }
-
-                  if ($success) {
-                      $triggerBackup = (Get-Date).AddYears(1)
-                      Write-Host "Backup triggered." -ForegroundColor Green
-                  } else {
-                      Write-Host "Failed. Retry in 60s..." -ForegroundColor Red
-                      Start-Sleep -Seconds 60
-                      continue
-                  }
-              }
-
-              # End session
-              if ($now -ge $endSession) {
-                  Write-Host "Session ended. Cleanup..." -ForegroundColor Yellow
-                  Get-Process -Name "bore" -ErrorAction SilentlyContinue | Stop-Process -Force
-                  exit 0
-              }
-
-              Start-Sleep -Seconds $sleepSeconds
-          }
+          Get
