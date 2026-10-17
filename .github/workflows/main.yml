@@ -30,8 +30,8 @@ jobs:
         id: gen_pass
         shell: powershell
         run: |
-          # Tạo mật khẩu ngẫu nhiên 12 ký tự (chữ + số)
-          $chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#"
+          # CHỈ DÙNG CHỮ VÀ SỐ ĐỂ TRÁNH LỖI TRUYỀN THAM SỐ
+          $chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
           $password = -join (1..12 | ForEach-Object { $chars[(Get-Random -Maximum $chars.Length)] })
           echo "GENERATED_PASSWORD=$password" >> $env:GITHUB_ENV
 
@@ -76,17 +76,24 @@ jobs:
           
           # Đảm bảo service chạy
           & "C:\Program Files\RustDesk\rustdesk.exe" --install-service
-          Start-Sleep -Seconds 5
+          
+          # CHỜ 15 GIÂY ĐỂ SERVICE KHỞI ĐỘNG HOÀN TOÀN TRƯỚC KHI SET PASS
+          Write-Host "Đợi RustDesk service ổn định..." -ForegroundColor Yellow
+          Start-Sleep -Seconds 15
           Start-Service -Name "RustDesk" -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
 
       - name: Set RustDesk Password and Get ID
         shell: powershell
         run: |
           $rustdeskExe = "C:\Program Files\RustDesk\rustdesk.exe"
           
-          # Set Password lấy từ bước Generate
+          Write-Host "Đang set mật khẩu: $env:GENERATED_PASSWORD" -ForegroundColor Cyan
+          # Set pass 2 lần để chắc chắn nó ghi đè thành công
           & $rustdeskExe --password "$env:GENERATED_PASSWORD"
           Start-Sleep -Seconds 3
+          & $rustdeskExe --password "$env:GENERATED_PASSWORD"
+          Start-Sleep -Seconds 5
           
           # Lấy ID
           $rustdeskId = $null
@@ -102,7 +109,6 @@ jobs:
           }
           
           if (-not $rustdeskId) {
-              # Fallback đọc từ config
               $configPath = "C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config\RustDesk.toml"
               if (Test-Path $configPath) {
                   $content = Get-Content $configPath -Raw
@@ -118,9 +124,6 @@ jobs:
               exit 1
           }
 
-      # ============================================================
-      # GỬI ID VÀ PASS VỀ MÁY PHỤ
-      # ============================================================
       - name: Send Credentials to Phone Server
         shell: powershell
         env:
@@ -136,19 +139,13 @@ jobs:
               secret            = "$env:PROVISION_SECRET"
           } | ConvertTo-Json
           
-          Write-Host "Đang gửi thông tin về Máy phụ ($url)..." -ForegroundColor Cyan
-          
           try {
               $res = Invoke-RestMethod -Uri $url -Method Post -Body $body -ContentType "application/json" -TimeoutSec 30
               Write-Host "✅ Gửi thành công!" -ForegroundColor Green
           } catch {
               Write-Host "❌ Lỗi gửi thông tin: $_" -ForegroundColor Red
-              # Không exit để vẫn giữ máy chạy
           }
 
-      # ============================================================
-      # GIỮ PHIÊN CHẠY THEO SỐ GIỜ
-      # ============================================================
       - name: Keep Session Alive
         shell: powershell
         run: |
@@ -158,7 +155,6 @@ jobs:
           Write-Host "Phiên làm việc sẽ kết thúc lúc: $endSession" -ForegroundColor Yellow
           
           while ((Get-Date) -lt $endSession) {
-              # Giữ service RustDesk luôn chạy
               $svc = Get-Service -Name "RustDesk" -ErrorAction SilentlyContinue
               if ($svc -and $svc.Status -ne "Running") {
                   Start-Service -Name "RustDesk" -ErrorAction SilentlyContinue
