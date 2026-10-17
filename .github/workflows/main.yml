@@ -3,7 +3,7 @@ name: Provision Cloud PC
 on:
   workflow_dispatch:
     inputs:
-      node_id:
+      instance_number:
         description: 'ID của Repo/Máy ảo (VD: node-game-01)'
         required: true
         type: string
@@ -30,7 +30,6 @@ jobs:
         id: gen_pass
         shell: powershell
         run: |
-          # CHỈ DÙNG CHỮ VÀ SỐ ĐỂ TRÁNH LỖI TRUYỀN THAM SỐ
           $chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
           $password = -join (1..12 | ForEach-Object { $chars[(Get-Random -Maximum $chars.Length)] })
           echo "GENERATED_PASSWORD=$password" >> $env:GITHUB_ENV
@@ -56,6 +55,35 @@ jobs:
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $Username -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Administrators" -Member $Username -ErrorAction SilentlyContinue
 
+      - name: Clean Desktop Icons
+        shell: powershell
+        run: |
+          Write-Host "Đang dọn dẹp icon màn hình..." -ForegroundColor Cyan
+          
+          # 1. Xóa các shortcut ngoài Desktop của User và Public
+          Remove-Item -Path "C:\Users\Public\Desktop\*" -Include *.lnk, *.url -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "C:\Users\Layer7Store\Desktop\*" -Include *.lnk, *.url -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "C:\Users\runneradmin\Desktop\*" -Include *.lnk, *.url -Force -ErrorAction SilentlyContinue
+
+          # 2. Ẩn các icon hệ thống mặc định
+          $RegPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\NewStartPanel"
+          if (-not (Test-Path $RegPath)) { New-Item -Path $RegPath -Force | Out-Null }
+
+          $HideIcons = @(
+              "{645FF040-5081-101B-9F08-00AA002F954E}", # Recycle Bin
+              "{20D04FE0-3AEA-1069-A2D8-08002B30309D}", # This PC
+              "{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}", # Network
+              "{59031a47-3f72-44a7-89c5-5595fe6b30ee}", # User Files
+              "{5399E694-6CE5-4D6C-8FCE-1D8870FDCBA0}"  # Control Panel
+          )
+
+          foreach ($GUID in $HideIcons) {
+              Set-ItemProperty -Path $RegPath -Name $GUID -Value 1 -Type DWord -Force
+          }
+
+          Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
+          Write-Host "✅ Đã dọn sạch màn hình!" -ForegroundColor Green
+
       - name: Install RustDesk
         shell: powershell
         timeout-minutes: 3
@@ -67,17 +95,14 @@ jobs:
           
           Start-Process -FilePath $installer -ArgumentList "--silent-install" -WindowStyle Hidden | Out-Null
           
-          # Đợi file cài đặt xuất hiện
           $elapsed = 0
           while ($elapsed -lt 60 -and -not (Test-Path "C:\Program Files\RustDesk\rustdesk.exe")) {
               Start-Sleep -Seconds 5
               $elapsed += 5
           }
           
-          # Đảm bảo service chạy
           & "C:\Program Files\RustDesk\rustdesk.exe" --install-service
           
-          # CHỜ 15 GIÂY ĐỂ SERVICE KHỞI ĐỘNG HOÀN TOÀN TRƯỚC KHI SET PASS
           Write-Host "Đợi RustDesk service ổn định..." -ForegroundColor Yellow
           Start-Sleep -Seconds 15
           Start-Service -Name "RustDesk" -ErrorAction SilentlyContinue
@@ -89,13 +114,11 @@ jobs:
           $rustdeskExe = "C:\Program Files\RustDesk\rustdesk.exe"
           
           Write-Host "Đang set mật khẩu: $env:GENERATED_PASSWORD" -ForegroundColor Cyan
-          # Set pass 2 lần để chắc chắn nó ghi đè thành công
           & $rustdeskExe --password "$env:GENERATED_PASSWORD"
           Start-Sleep -Seconds 3
           & $rustdeskExe --password "$env:GENERATED_PASSWORD"
           Start-Sleep -Seconds 5
           
-          # Lấy ID
           $rustdeskId = $null
           for ($i = 1; $i -le 10; $i++) {
               try {
@@ -130,7 +153,8 @@ jobs:
           PHONE_SERVER_URL: ${{ secrets.PHONE_SERVER_URL }}
           PROVISION_SECRET: ${{ secrets.PROVISION_SECRET }}
         run: |
-          $nodeId = "${{ github.event.inputs.node_id }}"
+          # Sử dụng instance_number thay cho node_id
+          $nodeId = "${{ github.event.inputs.instance_number }}"
           $url = "$env:PHONE_SERVER_URL/api/provision/$nodeId"
           
           $body = @{
