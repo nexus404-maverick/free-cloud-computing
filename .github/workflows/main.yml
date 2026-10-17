@@ -3,8 +3,8 @@ name: Provision Cloud PC
 on:
   workflow_dispatch:
     inputs:
-      node_id:
-        description: 'ID của Repo/Máy ảo (VD: node-game-01)'
+      instance_number: # Đổi từ node_id thành instance_number
+        description: 'ID của Repo/Máy ảo'
         required: true
         type: string
       hours:
