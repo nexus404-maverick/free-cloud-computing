@@ -147,25 +147,28 @@ jobs:
               exit 1
           }
 
-      - name: Send Credentials to Phone Server
+            - name: Send Credentials to Phone Server
         shell: powershell
         env:
           PHONE_SERVER_URL: ${{ secrets.PHONE_SERVER_URL }}
           PROVISION_SECRET: ${{ secrets.PROVISION_SECRET }}
         run: |
-          # Sử dụng instance_number thay cho node_id
-          $nodeId = "${{ github.event.inputs.instance_number }}"
-          $url = "$env:PHONE_SERVER_URL/api/provision/$nodeId"
+          $orderCode = "${{ github.event.inputs.instance_number }}"
+          $url = "$env:PHONE_SERVER_URL/api/provision/$orderCode"
           
+          # Đóng gói JSON theo ĐÚNG tài liệu
           $body = @{
-              rustdesk_id       = "$env:RUSTDESK_ID"
-              rustdesk_password = "$env:GENERATED_PASSWORD"
-              secret            = "$env:PROVISION_SECRET"
+              secret      = "$env:PROVISION_SECRET"
+              order_code  = $orderCode
+              remote_id   = "$env:RUSTDESK_ID"
+              password    = "$env:GENERATED_PASSWORD"
           } | ConvertTo-Json
+          
+          Write-Host "Đang gửi thông tin về Máy phụ ($url)..." -ForegroundColor Cyan
           
           try {
               $res = Invoke-RestMethod -Uri $url -Method Post -Body $body -ContentType "application/json" -TimeoutSec 30
-              Write-Host "✅ Gửi thành công!" -ForegroundColor Green
+              Write-Host "✅ Gửi thành công! Web đã nhận ID/Pass." -ForegroundColor Green
           } catch {
               Write-Host "❌ Lỗi gửi thông tin: $_" -ForegroundColor Red
           }
