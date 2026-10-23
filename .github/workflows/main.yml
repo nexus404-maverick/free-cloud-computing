@@ -150,20 +150,24 @@ jobs:
       - name: Send Credentials to Phone Server
         shell: powershell
         env:
-          PHONE_SERVER_URL: ${{ secrets.PHONE_SERVER_URL }} # Link Pinggy
+          PHONE_SERVER_URL: ${{ secrets.PHONE_SERVER_URL }}
         run: |
-          $orderCode = "${{ github.event.inputs.instance_number }}"
-          $url = "$env:PHONE_SERVER_URL/api/provision/$orderCode"
+          $nodeId = "${{ github.event.inputs.instance_number }}"
+          
+          # Xóa dấu / ở cuối URL nếu có để tránh lỗi đường dẫn
+          $baseUrl = $env:PHONE_SERVER_URL.TrimEnd('/')
+          $url = "$baseUrl/api/provision/$nodeId"
           
           $body = @{
-              remote_id = "$env:RUSTDESK_ID"
-              password  = "$env:GENERATED_PASSWORD"
+              rustdesk_id       = "$env:RUSTDESK_ID"
+              rustdesk_password = "$env:GENERATED_PASSWORD"
           } | ConvertTo-Json
           
-          Invoke-RestMethod -Uri $url -Method Post -Body $body -ContentType "application/json" -TimeoutSec 30
-              Write-Host "✅ Đã gửi về Termux thành công!" -ForegroundColor Green
+          try {
+              $res = Invoke-RestMethod -Uri $url -Method Post -Body $body -ContentType "application/json" -TimeoutSec 30
+              Write-Host "Send to Termux successfully!"
           } catch {
-              Write-Host "❌ Lỗi: $_" -ForegroundColor Red
+              Write-Host "Failed to send to Termux: $_"
           }
       - name: Keep Session Alive
         shell: powershell
