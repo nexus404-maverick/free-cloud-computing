@@ -213,7 +213,7 @@ jobs:
           $hours = [int]"${{ github.event.inputs.hours }}"
           $endSession = (Get-Date).AddMinutes($hours * 60)
           
-          Write-Host "Session started. Will end at: $endSession"
+          Write-Host "Phiên làm việc sẽ kết thúc lúc: $endSession" -ForegroundColor Yellow
           
           while ((Get-Date) -lt $endSession) {
               $svc = Get-Service -Name "RustDesk" -ErrorAction SilentlyContinue
@@ -222,4 +222,4 @@ jobs:
               }
               Start-Sleep -Seconds 60
           }
-          Write-Host "Time is up. Ending session."
+          Write-Host "Hết thời gian thuê. Kết thúc phiên." -ForegroundColor Red
