@@ -95,7 +95,6 @@ jobs:
           Remove-Item $sshLog -Force -ErrorAction SilentlyContinue
           
           Write-Host "Starting Serveo Tunnel..."
-          # Dùng cmd.exe để ép SSH ghi log ra file chuẩn xác
           $cmd = "ssh -tt -o StrictHostKeyChecking=no -R 0:localhost:3389 serveo.net > `"$sshLog`" 2>&1"
           $proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $cmd -WindowStyle Hidden -PassThru
 
@@ -113,10 +112,10 @@ jobs:
               
               if (Test-Path $sshLog) {
                   $content = Get-Content $sshLog -Raw -ErrorAction SilentlyContinue
-                  # Serveo trả về chuỗi dạng: Forwarding TCP connections from serveo.net:12345
-                  if ($content -match 'serveo\.net:(\d+)') {
-                      $publicHost = "serveo.net"
-                      $publicPort = $matches[1]
+                  # Regex moi: Bat ky domain nao sau chu "from "
+                  if ($content -match 'from\s+([a-zA-Z0-9\.\-]+):(\d+)') {
+                      $publicHost = $matches[1]
+                      $publicPort = $matches[2]
                       break
                   }
               }
