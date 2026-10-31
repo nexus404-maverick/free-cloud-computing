@@ -95,7 +95,6 @@ jobs:
               "RDP_PORT=$publicPort" >> $env:GITHUB_ENV
               Write-Host "Tunnel Established: $publicHost on port $publicPort"
           } else {
-              if (Test-Path $sshLog) { Get-Content $sshLog }
               Write-Host "Serveo failed or timed out. Skipping to AnyDesk." -ForegroundColor Yellow
           }
           exit 0
@@ -127,9 +126,9 @@ jobs:
           Start-Service -Name "AnyDesk" -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 5
 
-          Write-Host "Getting AnyDesk ID..."
+          Write-Host "Getting AnyDesk ID (Trying CLI)..."
           $anydeskId = $null
-          for ($i = 1; $i -le 10 -and -not $anydeskId; $i++) {
+          for ($i = 1; $i -le 5 -and -not $anydeskId; $i++) {
             $idOutput = @(& $anydeskExe --get-id 2>&1)
             foreach ($line in $idOutput) {
               if (([string]$line).Trim() -match '^\d{9,10}$') { 
@@ -137,14 +136,39 @@ jobs:
                   break 
               }
             }
-            if (-not $anydeskId) { Start-Sleep -Seconds 3 }
+            if (-not $anydeskId) { Start-Sleep -Seconds 2 }
+          }
+
+          # CÁCH 2: NẾU CLI THẤT BẠI, CHỌC THẲNG VÀO FILE CONFIG CỦA ANYDESK
+          if (-not $anydeskId) {
+              Write-Host "CLI failed. Searching AnyDesk config files directly..."
+              $searchPaths = @(
+                  "C:\ProgramData\AnyDesk",
+                  "$env:APPDATA\AnyDesk",
+                  "C:\Windows\System32\config\systemprofile\AppData\Roaming\AnyDesk"
+              )
+              foreach ($path in $searchPaths) {
+                  if (Test-Path $path) {
+                      # Tìm file service.conf hoặc system.conf
+                      $confFiles = Get-ChildItem -Path $path -Filter "*.conf" -ErrorAction SilentlyContinue
+                      foreach ($file in $confFiles) {
+                          $content = Get-Content $file.FullName -Raw -ErrorAction SilentlyContinue
+                          if ($content -match 'ad\.anydesk\.id=(\d{9,10})') {
+                              $anydeskId = $matches[1]
+                              Write-Host "Found ID in file: $($file.FullName)"
+                              break
+                          }
+                      }
+                  }
+                  if ($anydeskId) { break }
+              }
           }
           
           if ($anydeskId) {
               Write-Host "AnyDesk ID obtained: $anydeskId"
               "ANYDESK_ID=$anydeskId" >> $env:GITHUB_ENV
           } else {
-              Write-Host "Failed to get AnyDesk ID." -ForegroundColor Yellow
+              Write-Host "Failed to get AnyDesk ID." -ForegroundColor Red
               "ANYDESK_ID=NOT_FOUND" >> $env:GITHUB_ENV
           }
           exit 0
