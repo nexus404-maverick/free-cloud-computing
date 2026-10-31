@@ -135,24 +135,24 @@ jobs:
       - name: Publish Connection Details (ID & PIN)
         shell: powershell
         run: |
-          # Sử dụng Here-String để tránh hoàn toàn lỗi parse cú pháp của Markdown
-          $summary = @"
-## 🖥️ XyDesk Remote (RDP + Serveo)
-
-- **ID (Host):** ``$env:RDP_HOST``
-- **Port:** ``$env:RDP_PORT``
-
-- **Username:** ``XyDesk``
-- **PIN (Password):** ``$env:RDP_PIN``
-
-**Hướng dẫn kết nối:**
-1. Mở app RDP (mstsc trên PC, aRDP/Microsoft Remote Desktop trên điện thoại).
-2. Ở ô Host/PC Name, nhập ID ở trên.
-3. Ở ô Port, nhập Port ở trên.
-4. Điền Username và PIN để kết nối.
-
-> ⚠️ **Lưu ý:** Serveo miễn phí có thể ngắt kết nối nếu không có traffic trong thời gian dài.
-"@
+          # Sử dụng mảng string kết hợp nối chuỗi để tránh hoàn toàn lỗi cú pháp
+          $summary = @(
+            '## 🖥️ XyDesk Remote (RDP + Serveo)',
+            '',
+            '- **ID (Host):** `' + $env:RDP_HOST + '`',
+            '- **Port:** `' + $env:RDP_PORT + '`',
+            '',
+            '- **Username:** `XyDesk`',
+            '- **PIN (Password):** `' + $env:RDP_PIN + '`',
+            '',
+            '**Huong dan ket noi:**',
+            '1. Mo app RDP (mstsc tren PC, aRDP/Microsoft Remote Desktop tren dien thoai).',
+            '2. O o Host/PC Name, nhap ID o tren.',
+            '3. O o Port, nhap Port o tren.',
+            '4. Dien Username va PIN de ket noi.',
+            '',
+            '> ⚠️ **Luu y:** Serveo mien phi co the ngat ket noi neu khong co traffic trong thoi gian dai.'
+          )
           $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
 
       - name: Keep session alive
