@@ -15,13 +15,52 @@ jobs:
       - name: Run XyDesk Host Configuration
         shell: powershell
         run: |
-          # Chạy script XyDesk tối ưu hóa RDP do bạn cung cấp
-          if (Test-Path ".\xydesk-host.ps1") {
-              .\xydesk-host.ps1
-          } else {
-              Write-Error "Không tìm thấy file xydesk-host.ps1 trong repo!"
-              exit 1
+          $ErrorActionPreference = "SilentlyContinue"
+          Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0
+          Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fSingleSessionPerUser" -Value 0
+          $tsPolicy = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
+          if (!(Test-Path $tsPolicy)) { New-Item -Path $tsPolicy -Force | Out-Null }
+          New-ItemProperty -Path $tsPolicy -Name "fDenyTSConnections" -PropertyType DWord -Value 0 -Force | Out-Null
+          New-ItemProperty -Path $tsPolicy -Name "fSingleSessionPerUser" -PropertyType DWord -Value 0 -Force | Out-Null
+          New-ItemProperty -Path $tsPolicy -Name "bEnumerateHWBeforeSW" -PropertyType DWord -Value 1 -Force | Out-Null
+          New-ItemProperty -Path $tsPolicy -Name "AVC444ModePreferred" -PropertyType DWord -Value 1 -Force | Out-Null
+          New-ItemProperty -Path $tsPolicy -Name "AVCHardwareEncodePreferred" -PropertyType DWord -Value 1 -Force | Out-Null
+          New-ItemProperty -Path $tsPolicy -Name "VGAdapter" -PropertyType DWord -Value 1 -Force | Out-Null
+          New-ItemProperty -Path $tsPolicy -Name "fAllowFontAntiAlias" -PropertyType DWord -Value 1 -Force | Out-Null
+          New-ItemProperty -Path $tsPolicy -Name "fAllowDesktopComposition" -PropertyType DWord -Value 1 -Force | Out-Null
+          New-ItemProperty -Path $tsPolicy -Name "SelectTransport" -PropertyType DWord -Value 0 -Force | Out-Null
+          New-ItemProperty -Path $tsPolicy -Name "fDisableAudio" -PropertyType DWord -Value 0 -Force | Out-Null
+          New-ItemProperty -Path $tsPolicy -Name "fDisableAudioCapture" -PropertyType DWord -Value 0 -Force | Out-Null
+          New-ItemProperty -Path $tsPolicy -Name "fDisableCam" -PropertyType DWord -Value 0 -Force | Out-Null
+          New-ItemProperty -Path $tsPolicy -Name "DWMFRAMEINTERVAL" -PropertyType DWord -Value 16 -Force | Out-Null
+          New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name "fDisableAudio" -PropertyType DWord -Value 0 -Force | Out-Null
+          New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name "fDisableAudioCapture" -PropertyType DWord -Value 0 -Force | Out-Null
+          New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "fDisableAudio" -PropertyType DWord -Value 0 -Force | Out-Null
+          New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "fDisableAudioCapture" -PropertyType DWord -Value 0 -Force | Out-Null
+          New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations" -Name "DWMFRAMEINTERVAL" -PropertyType DWord -Value 16 -Force | Out-Null
+          
+          foreach ($c in @(
+              "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone",
+              "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone\NonPackaged",
+              "HKCU:\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone",
+              "HKCU:\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone\NonPackaged"
+          )) {
+              if (-not (Test-Path $c)) { New-Item -Path $c -Force | Out-Null }
+              Set-ItemProperty -Path $c -Name "Value" -Value "Allow" -Force | Out-Null
           }
+          
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          netsh advfirewall firewall add rule name="XyDesk Remote RDP TCP" dir=in action=allow protocol=TCP localport=3389 | Out-Null
+          netsh advfirewall firewall add rule name="XyDesk Remote RDP UDP" dir=in action=allow protocol=UDP localport=3389 | Out-Null
+          netsh advfirewall firewall add rule name="XyDesk Remote QUIC UDP" dir=in action=allow protocol=UDP localport=4433 | Out-Null
+          
+          Set-Service -Name "AudioEndpointBuilder" -StartupType Automatic
+          Start-Service -Name "AudioEndpointBuilder"
+          Set-Service -Name "Audiosrv" -StartupType Automatic
+          Start-Service -Name "Audiosrv"
+          Start-Service TermService
+          
+          Write-Host "XyDesk Host Ready (120Hz GPU AVC444 + ClearType + On-Mic AudioCapture + QUIC UDP 4433)"
 
       - name: Create RDP User (PIN)
         shell: powershell
@@ -56,7 +95,6 @@ jobs:
           New-Item -ItemType File -Path $sshLog, $sshErr -Force | Out-Null
           
           Write-Host "Starting Pinggy Tunnel..."
-          # Sử dụng SSH để mở cổng 3389 ra ngoài
           $proc = Start-Process -FilePath "ssh" -ArgumentList "-p 443 -R0:localhost:3389 -o StrictHostKeyChecking=no a.pinggy.io" -WindowStyle Hidden -RedirectStandardOutput $sshLog -RedirectStandardError $sshErr -PassThru
 
           Write-Host "Waiting for Pinggy to initialize..."
@@ -71,12 +109,10 @@ jobs:
                   break
               }
               
-              # Đọc CẢ 2 luồng (vì Pinggy in link ra stderr)
               $out = Get-Content $sshLog -Raw -ErrorAction SilentlyContinue
               $err = Get-Content $sshErr -Raw -ErrorAction SilentlyContinue
               $combined = "$out`n$err"
               
-              # Tìm ID dạng tcp://xxxx.a.pinggy.link:port
               if ($combined -match 'tcp://([a-zA-Z0-9\-\.]+):(\d+)') {
                   $publicHost = $matches[1]
                   $publicPort = $matches[2]
