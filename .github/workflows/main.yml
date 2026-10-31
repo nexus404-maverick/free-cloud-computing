@@ -1,4 +1,4 @@
-name: XyDesk Remote (RDP via Serveo + RustDesk Failover)
+name: XyDesk Remote (RDP via Serveo + AnyDesk Failover)
 
 on:
   workflow_dispatch:
@@ -78,7 +78,7 @@ jobs:
           $publicHost = $null
           $publicPort = $null
           
-          for ($i = 1; $i -le 30; $i++) {
+          for ($i = 1; $i -le 20; $i++) {
               Start-Sleep -Seconds 2
               if (Test-Path $sshLog) {
                   $content = Get-Content $sshLog -Raw -ErrorAction SilentlyContinue
@@ -96,112 +96,81 @@ jobs:
               Write-Host "Tunnel Established: $publicHost on port $publicPort"
           } else {
               if (Test-Path $sshLog) { Get-Content $sshLog }
-              throw "Tunnel failed."
+              Write-Host "Serveo failed or timed out. Skipping to AnyDesk." -ForegroundColor Yellow
           }
           exit 0
 
-      - name: Install RustDesk (Priority 2 - Failover)
+      - name: Install AnyDesk (Priority 2 - Failover)
         shell: powershell
         timeout-minutes: 10
         run: |
           $ErrorActionPreference = 'Continue'
-          $installer = "$env:TEMP\rustdesk.exe"
+          $anydeskInstaller = "$env:TEMP\AnyDesk.exe"
           
-          Write-Host "Downloading RustDesk 1.5.0..."
-          Invoke-WebRequest -Uri "https://github.com/rustdesk/rustdesk/releases/download/1.5.0/rustdesk-1.5.0-x86_64.exe" -OutFile $installer -UseBasicParsing
+          Write-Host "Downloading AnyDesk..."
+          Invoke-WebRequest -Uri "https://download.anydesk.com/AnyDesk.exe" -OutFile $anydeskInstaller -UseBasicParsing
           
-          Write-Host "Starting silent install..."
-          Start-Process -FilePath $installer -ArgumentList "--silent-install"
-          Start-Sleep -Seconds 15
+          Write-Host "Installing AnyDesk silently..."
+          Start-Process -FilePath $anydeskInstaller -ArgumentList "--install `"C:\Program Files\AnyDesk`" --silent" -Wait
           
-          Write-Host "Killing GUI to prevent hang..."
-          Stop-Process -Name "rustdesk" -Force -ErrorAction SilentlyContinue
-          Stop-Process -Name "rustdesk-installer" -Force -ErrorAction SilentlyContinue
-          Start-Sleep -Seconds 3
-
-          $rustdeskExe = "$env:ProgramFiles\RustDesk\rustdesk.exe"
-          if (-not (Test-Path $rustdeskExe)) {
-              $rustdeskExe = Get-ChildItem "$env:ProgramFiles","${env:ProgramFiles(x86)}" -Filter rustdesk.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName -First 1
-          }
-          if (-not $rustdeskExe) { 
-              Write-Host "RustDesk installation failed. Skipping Failover." -ForegroundColor Yellow
+          $anydeskExe = "C:\Program Files\AnyDesk\AnyDesk.exe"
+          if (-not (Test-Path $anydeskExe)) { 
+              Write-Host "AnyDesk installation failed." -ForegroundColor Red
               exit 0 
           }
           
-          Write-Host "Installing RustDesk Service..."
-          Start-Process -FilePath $rustdeskExe -ArgumentList '--install-service'
-          Start-Sleep -Seconds 10
+          Write-Host "Setting AnyDesk Password..."
+          Start-Process -FilePath $anydeskExe -ArgumentList "--set-password `"$env:RDP_PIN`"" -Wait
+          Start-Sleep -Seconds 3
           
-          Write-Host "Starting RustDesk Service..."
-          $null = sc.exe start RustDesk
-          Start-Sleep -Seconds 10
-          
-          Write-Host "Setting RustDesk Password..."
-          Start-Process -FilePath $rustdeskExe -ArgumentList "--password `"$env:RDP_PIN`"" -Wait
+          Write-Host "Starting AnyDesk Service..."
+          Start-Service -Name "AnyDesk" -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 5
 
-          Write-Host "Getting RustDesk ID (Trying CLI)..."
-          $rustdeskId = $null
-          
-          $configPaths = @(
-            "C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config\RustDesk.toml",
-            "C:\Windows\System32\config\systemprofile\AppData\Roaming\RustDesk\config\RustDesk.toml",
-            "$env:APPDATA\RustDesk\config\RustDesk.toml"
-          )
-
-          for ($i = 1; $i -le 10 -and -not $rustdeskId; $i++) {
-            $idOutput = @(& $rustdeskExe --get-id 2>&1)
+          Write-Host "Getting AnyDesk ID..."
+          $anydeskId = $null
+          for ($i = 1; $i -le 10 -and -not $anydeskId; $i++) {
+            $idOutput = @(& $anydeskExe --get-id 2>&1)
             foreach ($line in $idOutput) {
-              if (([string]$line).Trim() -match '^\d{6,20}$') { $rustdeskId = $matches[0]; break }
+              if (([string]$line).Trim() -match '^\d{9,10}$') { 
+                  $anydeskId = $matches[0]
+                  break 
+              }
             }
-            
-            if (-not $rustdeskId) {
-                foreach ($path in $configPaths) {
-                    if (Test-Path $path) {
-                        $content = Get-Content $path -Raw -ErrorAction SilentlyContinue
-                        if ($content -match 'id\s*=\s*"(\d{6,20})"') {
-                            $rustdeskId = $matches[1]
-                            break
-                        }
-                    }
-                }
-            }
-            
-            if (-not $rustdeskId) { Start-Sleep -Seconds 3 }
+            if (-not $anydeskId) { Start-Sleep -Seconds 3 }
           }
           
-          if ($rustdeskId) {
-              Write-Host "RustDesk ID obtained: $rustdeskId"
-              "RUSTDESK_ID=$rustdeskId" >> $env:GITHUB_ENV
+          if ($anydeskId) {
+              Write-Host "AnyDesk ID obtained: $anydeskId"
+              "ANYDESK_ID=$anydeskId" >> $env:GITHUB_ENV
           } else {
-              Write-Host "Failed to get RustDesk ID. Fallback to Serveo only." -ForegroundColor Yellow
-              "RUSTDESK_ID=NOT_FOUND" >> $env:GITHUB_ENV
+              Write-Host "Failed to get AnyDesk ID." -ForegroundColor Yellow
+              "ANYDESK_ID=NOT_FOUND" >> $env:GITHUB_ENV
           }
           exit 0
 
       - name: Publish Connection Details
         shell: powershell
         run: |
-          $rustdeskStatus = if ($env:RUSTDESK_ID -eq "NOT_FOUND" -or [string]::IsNullOrEmpty($env:RUSTDESK_ID)) { "Failed (ID not found)" } else { $env:RUSTDESK_ID }
+          $anydeskStatus = if ($env:ANYDESK_ID -eq "NOT_FOUND" -or [string]::IsNullOrEmpty($env:ANYDESK_ID)) { "Failed" } else { $env:ANYDESK_ID }
+          $serveoStatus = if ([string]::IsNullOrEmpty($env:RDP_HOST)) { "Failed" } else { "$env:RDP_HOST : $env:RDP_PORT" }
           
-          # KHONG DUNG TIENG VIET CO DAU DE TRANH LOI FONT CHU
           $summary = @(
-            '## XyDesk Remote (RDP + RustDesk Failover)',
+            '## XyDesk Remote (RDP + AnyDesk)',
             '',
-            '### Option 1: RDP via Serveo (Use now)',
-            '- **ID (Host):** `' + $env:RDP_HOST + '`',
-            '- **Port:** `' + $env:RDP_PORT + '`',
+            '### Option 1: RDP via Serveo (Use quickly, may disconnect)',
+            '- **Address:** `' + $serveoStatus + '`',
             '- **Username:** `XyDesk`',
-            '- **PIN (Password):** `' + $env:RDP_PIN + '`',
+            '- **Password:** `' + $env:RDP_PIN + '`',
             '',
-            '### Option 2: RustDesk (Use when Serveo disconnects)',
-            '- **RustDesk ID:** `' + $rustdeskStatus + '`',
+            '### Option 2: AnyDesk (Stable connection)',
+            '- **AnyDesk ID:** `' + $anydeskStatus + '`',
             '- **Password:** `' + $env:RDP_PIN + '`',
             '',
             '**Instructions:**',
-            '1. Open RDP app (mstsc/aRDP) and connect using Option 1.',
-            '2. When RDP disconnects (after ~10 mins), open RustDesk and use Option 2.',
-            '3. If RustDesk ID failed, please re-run the workflow.'
+            '1. If Serveo is active, you can use RDP immediately.',
+            '2. Since Serveo is unstable, we recommend downloading the AnyDesk app and using Option 2 for a stable connection.',
+            '3. AnyDesk will not disconnect you.'
           )
           $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
 
