@@ -112,7 +112,6 @@ jobs:
               
               if (Test-Path $sshLog) {
                   $content = Get-Content $sshLog -Raw -ErrorAction SilentlyContinue
-                  # Regex moi: Bat ky domain nao sau chu "from "
                   if ($content -match 'from\s+([a-zA-Z0-9\.\-]+):(\d+)') {
                       $publicHost = $matches[1]
                       $publicPort = $matches[2]
@@ -136,23 +135,24 @@ jobs:
       - name: Publish Connection Details (ID & PIN)
         shell: powershell
         run: |
-          $summary = @(
-            '## 🖥️ XyDesk Remote (RDP + Serveo)',
-            "",
-            "**ID (Host):** `$env:RDP_HOST`",
-            "**Port:** `$env:RDP_PORT`",
-            "",
-            "**Username:** `XyDesk`",
-            "**PIN (Password):** `$env:RDP_PIN`",
-            "",
-            "**Hướng dẫn kết nối:**",
-            "1. Mở app RDP (mstsc trên PC, aRDP/Microsoft Remote Desktop trên điện thoại).",
-            "2. Ở ô Host/PC Name, nhập ID ở trên (VD: `$env:RDP_HOST`).",
-            "3. Ở ô Port, nhập `$env:RDP_PORT`.",
-            "4. Điền Username và PIN để kết nối.",
-            "",
-            "> ⚠️ **Lưu ý:** Serveo miễn phí có thể ngắt kết nối nếu không có traffic trong thời gian dài."
-          )
+          # Sử dụng Here-String để tránh hoàn toàn lỗi parse cú pháp của Markdown
+          $summary = @"
+## 🖥️ XyDesk Remote (RDP + Serveo)
+
+- **ID (Host):** ``$env:RDP_HOST``
+- **Port:** ``$env:RDP_PORT``
+
+- **Username:** ``XyDesk``
+- **PIN (Password):** ``$env:RDP_PIN``
+
+**Hướng dẫn kết nối:**
+1. Mở app RDP (mstsc trên PC, aRDP/Microsoft Remote Desktop trên điện thoại).
+2. Ở ô Host/PC Name, nhập ID ở trên.
+3. Ở ô Port, nhập Port ở trên.
+4. Điền Username và PIN để kết nối.
+
+> ⚠️ **Lưu ý:** Serveo miễn phí có thể ngắt kết nối nếu không có traffic trong thời gian dài.
+"@
           $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
 
       - name: Keep session alive
