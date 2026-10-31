@@ -100,9 +100,6 @@ jobs:
           }
           exit 0
 
-      # ============================================================
-      # CÀI RUSTDESK DỰ PHÒNG (Bỏ qua lỗi nếu không lấy được ID)
-      # ============================================================
       - name: Install RustDesk (Priority 2 - Failover)
         shell: powershell
         timeout-minutes: 10
@@ -146,7 +143,6 @@ jobs:
           Write-Host "Getting RustDesk ID (Trying CLI)..."
           $rustdeskId = $null
           
-          # Đường dẫn file cấu hình
           $configPaths = @(
             "C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config\RustDesk.toml",
             "C:\Windows\System32\config\systemprofile\AppData\Roaming\RustDesk\config\RustDesk.toml",
@@ -159,7 +155,6 @@ jobs:
               if (([string]$line).Trim() -match '^\d{6,20}$') { $rustdeskId = $matches[0]; break }
             }
             
-            # Nếu CLI thất bại, đọc file config
             if (-not $rustdeskId) {
                 foreach ($path in $configPaths) {
                     if (Test-Path $path) {
@@ -182,31 +177,31 @@ jobs:
               Write-Host "Failed to get RustDesk ID. Fallback to Serveo only." -ForegroundColor Yellow
               "RUSTDESK_ID=NOT_FOUND" >> $env:GITHUB_ENV
           }
-          # Ép buộc thành công để workflow không bị dừng
           exit 0
 
       - name: Publish Connection Details
         shell: powershell
         run: |
-          $rustdeskStatus = if ($env:RUSTDESK_ID -eq "NOT_FOUND" -or [string]::IsNullOrEmpty($env:RUSTDESK_ID)) { "Lỗi (Không lấy được ID)" } else { $env:RUSTDESK_ID }
+          $rustdeskStatus = if ($env:RUSTDESK_ID -eq "NOT_FOUND" -or [string]::IsNullOrEmpty($env:RUSTDESK_ID)) { "Failed (ID not found)" } else { $env:RUSTDESK_ID }
           
+          # KHONG DUNG TIENG VIET CO DAU DE TRANH LOI FONT CHU
           $summary = @(
-            '## 🖥️ XyDesk Remote (RDP + RustDesk Failover)',
+            '## XyDesk Remote (RDP + RustDesk Failover)',
             '',
-            '### 🚀 Phương án 1: RDP qua Serveo (Dùng ngay)',
+            '### Option 1: RDP via Serveo (Use now)',
             '- **ID (Host):** `' + $env:RDP_HOST + '`',
             '- **Port:** `' + $env:RDP_PORT + '`',
             '- **Username:** `XyDesk`',
             '- **PIN (Password):** `' + $env:RDP_PIN + '`',
             '',
-            '### 🛡️ Phương án 2: RustDesk (Dùng khi Serveo sập)',
+            '### Option 2: RustDesk (Use when Serveo disconnects)',
             '- **RustDesk ID:** `' + $rustdeskStatus + '`',
             '- **Password:** `' + $env:RDP_PIN + '`',
             '',
-            '**Hướng dẫn:**',
-            '1. Dùng app RDP (mstsc/aRDP) kết nối theo Phương án 1 để vào máy ngay.',
-            '2. Khi RDP bị ngắt (sau ~10 phút), mở app RustDesk và kết nối theo Phương án 2 (nếu có ID).',
-            '3. Nếu RustDesk báo lỗi ID, bạn hãy chạy lại workflow để lấy phiên mới.'
+            '**Instructions:**',
+            '1. Open RDP app (mstsc/aRDP) and connect using Option 1.',
+            '2. When RDP disconnects (after ~10 mins), open RustDesk and use Option 2.',
+            '3. If RustDesk ID failed, please re-run the workflow.'
           )
           $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
 
