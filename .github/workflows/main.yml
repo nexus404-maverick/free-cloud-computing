@@ -66,17 +66,14 @@ jobs:
         shell: powershell
         run: |
           try {
-              # Tắt chính sách mật khẩu phức tạp
               $seceditFile = "$env:TEMP\secpol.inf"
               $seceditContent = @("[Unicode]", "Unicode=yes", "[System Access]", "PasswordComplexity = 0", "MinimumPasswordLength = 0")
               Set-Content -Path $seceditFile -Value $seceditContent -Encoding Unicode
               $null = secedit /configure /db "$env:TEMP\secpol.sdb" /cfg $seceditFile /areas SECURITYPOLICY 2>&1
               Remove-Item $seceditFile -Force -ErrorAction SilentlyContinue
 
-              # Tạo mã PIN (Mật khẩu) ngẫu nhiên 10 ký tự
               $pin = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 10 | % {[char]$_})
               
-              # Tạo user "XyDesk"
               $securePass = ConvertTo-SecureString $pin -AsPlainText -Force
               $null = New-LocalUser -Name "XyDesk" -Password $securePass -AccountNeverExpires -ErrorAction SilentlyContinue
               $null = Add-LocalGroupMember -Group "Administrators" -Member "XyDesk" -ErrorAction SilentlyContinue
@@ -99,13 +96,14 @@ jobs:
           New-Item -ItemType File -Path $sshLog, $sshErr -Force | Out-Null
           
           Write-Host "Starting Pinggy Tunnel..."
-          $proc = Start-Process -FilePath "ssh" -ArgumentList "-p 443 -R0:localhost:3389 -o StrictHostKeyChecking=no a.pinggy.io" -WindowStyle Hidden -RedirectStandardOutput $sshLog -RedirectStandardError $sshErr -PassThru
+          # Thêm tham số -T để tắt pseudo-terminal, giúp SSH không bị treo
+          $proc = Start-Process -FilePath "ssh" -ArgumentList "-T -p 443 -R0:localhost:3389 -o StrictHostKeyChecking=no -o ServerAliveInterval=10 a.pinggy.io" -WindowStyle Hidden -RedirectStandardOutput $sshLog -RedirectStandardError $sshErr -PassThru
 
-          Write-Host "Waiting for Pinggy to initialize..."
+          Write-Host "Waiting for Pinggy to initialize (max 60s)..."
           $publicHost = $null
           $publicPort = $null
           
-          for ($i = 1; $i -le 15; $i++) {
+          for ($i = 1; $i -le 30; $i++) {
               Start-Sleep -Seconds 2
               
               if ($proc.HasExited) {
