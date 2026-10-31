@@ -1,4 +1,4 @@
-name: XyDesk Remote (100% Auto RDP)
+name: XyDesk Remote (RDP via localhost.run)
 
 on:
   workflow_dispatch:
@@ -16,21 +16,15 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = "SilentlyContinue"
-          
           try {
-              # 1. Tắt NLA để tránh lỗi đăng nhập
               Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
               Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
-              
-              # 2. Bật RDP
               Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0
               Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fSingleSessionPerUser" -Value 0
               
-              # 3. Mở cổng Firewall
               Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
               netsh advfirewall firewall add rule name="RDP-Allow" dir=in action=allow protocol=TCP localport=3389 2>&1 | Out-Null
               
-              # 4. Tạo mật khẩu ngẫu nhiên 12 ký tự
               $seceditFile = "$env:TEMP\secpol.inf"
               $seceditContent = @("[Unicode]", "Unicode=yes", "[System Access]", "PasswordComplexity = 0", "MinimumPasswordLength = 0")
               Set-Content -Path $seceditFile -Value $seceditContent -Encoding Unicode
@@ -39,7 +33,6 @@ jobs:
 
               $password = -join ((48..57) + (65..90) + (97..122) + (33..47) | Get-Random -Count 12 | % {[char]$_})
               
-              # 5. Tạo user XyDesk
               $securePass = ConvertTo-SecureString $password -AsPlainText -Force
               $null = New-LocalUser -Name "XyDesk" -Password $securePass -AccountNeverExpires -PasswordNeverExpires -ErrorAction SilentlyContinue
               $null = Add-LocalGroupMember -Group "Administrators" -Member "XyDesk" -ErrorAction SilentlyContinue
@@ -47,7 +40,6 @@ jobs:
               
               "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
               
-              # Bật âm thanh
               Set-Service -Name "AudioEndpointBuilder" -StartupType Automatic
               Start-Service -Name "AudioEndpointBuilder" -ErrorAction SilentlyContinue
               Set-Service -Name "Audiosrv" -StartupType Automatic
@@ -58,10 +50,9 @@ jobs:
           } catch {
               Write-Host "Warning during setup: $_"
           }
-          # Ép buộc exit 0 để GitHub không báo lỗi đỏ
           exit 0
 
-      - name: Start Pinggy Tunnel & Display Info
+      - name: Start localhost.run Tunnel & Display Info
         shell: powershell
         timeout-minutes: 360
         run: |
@@ -79,22 +70,24 @@ jobs:
               Get-Process -Name "ssh" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
               Start-Sleep -Seconds 2
               
-              $sshLog = "$env:TEMP\pinggy.log"
+              $sshLog = "$env:TEMP\localhost_run.log"
               Remove-Item $sshLog -Force -ErrorAction SilentlyContinue
               
-              $cmd = "ssh -tt -p 443 -o StrictHostKeyChecking=no -o ServerAliveInterval=20 -R0:localhost:3389 a.pinggy.io > `"$sshLog`" 2>&1"
+              # Sử dụng localhost.run thay vì Pinggy
+              $cmd = "ssh -T -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -R 0:localhost:3389 nokey@localhost.run > `"$sshLog`" 2>&1"
               $script:tunnelProc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $cmd -WindowStyle Hidden -PassThru
               
-              Write-Host "Waiting for Pinggy to assign URL..."
-              for ($i = 1; $i -le 20; $i++) {
+              Write-Host "Waiting for localhost.run to assign URL..."
+              for ($i = 1; $i -le 30; $i++) {
                   Start-Sleep -Seconds 2
                   if (Test-Path $sshLog) {
                       $content = Get-Content $sshLog -Raw -ErrorAction SilentlyContinue
-                      if ($content -match 'tcp://([a-zA-Z0-9\-\.]+):(\d+)') {
+                      # localhost.run cấp link dạng: xxxx.lhr.life
+                      if ($content -match '([a-zA-Z0-9\-]+\.lhr\.life)') {
                           $script:currentHost = $matches[1]
-                          $script:currentPort = $matches[2]
+                          $script:currentPort = "80" # localhost.run tự map port 80 tới port đích
                           Write-Host "=================================================="
-                          Write-Host "NEW ADDRESS: $($script:currentHost):$($script:currentPort)" -ForegroundColor Green
+                          Write-Host "NEW ADDRESS: $($script:currentHost)" -ForegroundColor Green
                           Write-Host "=================================================="
                           return $true
                       }
@@ -104,16 +97,16 @@ jobs:
           }
 
           if (-not (Start-Tunnel)) { 
-              Write-Host "Cannot create Pinggy tunnel." -ForegroundColor Red
+              Write-Host "Cannot create localhost.run tunnel." -ForegroundColor Red
               exit 1 
           }
 
           $summary = @(
-            '## XyDesk Remote (RDP via Pinggy)',
+            '## XyDesk Remote (RDP via localhost.run)',
             '',
             '### Connection Details',
             '- **Host (IP):** `' + $currentHost + '`',
-            '- **Port:** `' + $currentPort + '`',
+            '- **Port:** `3389` (Hoặc để trống nếu app tự nhận)',
             '',
             '- **Username:** `XyDesk`',
             '- **Password:** `' + $env:RDP_PASSWORD + '`',
@@ -121,10 +114,9 @@ jobs:
             '**Huong dan ket noi:**',
             '1. Mo app RDP (mstsc tren PC, aRDP tren Android).',
             '2. O o Host/PC Name, nhap Host o tren.',
-            '3. O o Port, nhap Port o tren.',
-            '4. Nhap Username va Password de ket noi.',
+            '3. Nhap Username va Password de ket noi.',
             '',
-            '> ⚠️ Pinggy mien phi co the tu dong doi Port sau 60 phut.',
+            '> ⚠️ localhost.run mien phi co the tu dong doi Host sau vai gio.',
             '> Neu ban bi mat ket noi, hay quay lai trang nay de xem thong tin moi nhat trong phan Log.'
           )
           $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
@@ -136,19 +128,17 @@ jobs:
               if (-not $script:tunnelProc -or $script:tunnelProc.HasExited) {
                   Write-Host "Tunnel died. Recreating..." -ForegroundColor Yellow
                   if (Start-Tunnel) {
-                      Write-Host "NEW ADDRESS GENERATED: $currentHost : $currentPort" -ForegroundColor Cyan
+                      Write-Host "NEW ADDRESS GENERATED: $currentHost" -ForegroundColor Cyan
                       Write-Host "Please check the logs if you need to reconnect." -ForegroundColor Cyan
                   }
               } else {
-                  $content = Get-Content "$env:TEMP\pinggy.log" -Raw -ErrorAction SilentlyContinue
-                  if ($content -match 'tcp://([a-zA-Z0-9\-\.]+):(\d+)') {
+                  $content = Get-Content "$env:TEMP\localhost_run.log" -Raw -ErrorAction SilentlyContinue
+                  if ($content -match '([a-zA-Z0-9\-]+\.lhr\.life)') {
                       $newHost = $matches[1]
-                      $newPort = $matches[2]
-                      if ($newHost -ne $currentHost -or $newPort -ne $currentPort) {
+                      if ($newHost -ne $currentHost) {
                           $currentHost = $newHost
-                          $currentPort = $newPort
                           Write-Host "=================================================="
-                          Write-Host "NEW ADDRESS: $currentHost : $currentPort" -ForegroundColor Green
+                          Write-Host "NEW ADDRESS: $currentHost" -ForegroundColor Green
                           Write-Host "=================================================="
                       }
                   }
