@@ -1,4 +1,4 @@
-name: XyDesk Remote (RDP + Pinggy)
+name: XyDesk Remote (RDP + Serveo)
 
 on:
   workflow_dispatch:
@@ -86,20 +86,20 @@ jobs:
           }
           exit 0
 
-      - name: Start Pinggy Tunnel & Get ID
+      - name: Start Serveo Tunnel & Get ID
         shell: powershell
         timeout-minutes: 5
         run: |
           $ErrorActionPreference = 'Continue'
-          $sshLog = "$env:TEMP\pinggy_out.log"
-          $sshErr = "$env:TEMP\pinggy_err.log"
-          New-Item -ItemType File -Path $sshLog, $sshErr -Force | Out-Null
+          $sshLog = "$env:TEMP\serveo.log"
+          Remove-Item $sshLog -Force -ErrorAction SilentlyContinue
           
-          Write-Host "Starting Pinggy Tunnel..."
-          # Thêm tham số -T để tắt pseudo-terminal, giúp SSH không bị treo
-          $proc = Start-Process -FilePath "ssh" -ArgumentList "-T -p 443 -R0:localhost:3389 -o StrictHostKeyChecking=no -o ServerAliveInterval=10 a.pinggy.io" -WindowStyle Hidden -RedirectStandardOutput $sshLog -RedirectStandardError $sshErr -PassThru
+          Write-Host "Starting Serveo Tunnel..."
+          # Dùng cmd.exe để ép SSH ghi log ra file chuẩn xác
+          $cmd = "ssh -tt -o StrictHostKeyChecking=no -R 0:localhost:3389 serveo.net > `"$sshLog`" 2>&1"
+          $proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $cmd -WindowStyle Hidden -PassThru
 
-          Write-Host "Waiting for Pinggy to initialize (max 60s)..."
+          Write-Host "Waiting for Serveo to initialize (max 60s)..."
           $publicHost = $null
           $publicPort = $null
           
@@ -111,14 +111,14 @@ jobs:
                   break
               }
               
-              $out = Get-Content $sshLog -Raw -ErrorAction SilentlyContinue
-              $err = Get-Content $sshErr -Raw -ErrorAction SilentlyContinue
-              $combined = "$out`n$err"
-              
-              if ($combined -match 'tcp://([a-zA-Z0-9\-\.]+):(\d+)') {
-                  $publicHost = $matches[1]
-                  $publicPort = $matches[2]
-                  break
+              if (Test-Path $sshLog) {
+                  $content = Get-Content $sshLog -Raw -ErrorAction SilentlyContinue
+                  # Serveo trả về chuỗi dạng: Forwarding TCP connections from serveo.net:12345
+                  if ($content -match 'serveo\.net:(\d+)') {
+                      $publicHost = "serveo.net"
+                      $publicPort = $matches[1]
+                      break
+                  }
               }
           }
           
@@ -127,8 +127,8 @@ jobs:
               "RDP_PORT=$publicPort" >> $env:GITHUB_ENV
               Write-Host "Tunnel Established: $publicHost on port $publicPort"
           } else {
-              Write-Host "Failed to get Pinggy address. Log output:"
-              Write-Host $combined
+              Write-Host "Failed to get Serveo address. Log output:"
+              if (Test-Path $sshLog) { Get-Content $sshLog }
               if ($proc) { Stop-Process -Id $proc.Id -Force }
               throw "Tunnel failed. Please check the log above."
           }
@@ -138,7 +138,7 @@ jobs:
         shell: powershell
         run: |
           $summary = @(
-            '## 🖥️ XyDesk Remote (RDP + Pinggy)',
+            '## 🖥️ XyDesk Remote (RDP + Serveo)',
             "",
             "**ID (Host):** `$env:RDP_HOST`",
             "**Port:** `$env:RDP_PORT`",
@@ -152,7 +152,7 @@ jobs:
             "3. Ở ô Port, nhập `$env:RDP_PORT`.",
             "4. Điền Username và PIN để kết nối.",
             "",
-            "> ⚠️ **Lưu ý:** Pinggy miễn phí sẽ ngắt kết nối sau 60 phút. Nếu bạn cần dùng lâu dài, hãy chạy lại workflow."
+            "> ⚠️ **Lưu ý:** Serveo miễn phí có thể ngắt kết nối nếu không có traffic trong thời gian dài."
           )
           $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
 
