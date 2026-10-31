@@ -1,4 +1,4 @@
-name: XyDesk Remote (RDP via Serveo + AnyDesk Failover)
+name: XyDesk Remote (100% Auto RDP)
 
 on:
   workflow_dispatch:
@@ -12,196 +12,142 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Run XyDesk Host Configuration
+      - name: Setup Windows RDP & User
         shell: powershell
         run: |
           $ErrorActionPreference = "SilentlyContinue"
+          
+          # 1. Tắt NLA để tránh lỗi đăng nhập trên một số app RDP
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+          
+          # 2. Bật RDP
           Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0
           Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fSingleSessionPerUser" -Value 0
           
-          $tsPolicy = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
-          if (!(Test-Path $tsPolicy)) { New-Item -Path $tsPolicy -Force | Out-Null }
-          New-ItemProperty -Path $tsPolicy -Name "fDenyTSConnections" -PropertyType DWord -Value 0 -Force | Out-Null
-          New-ItemProperty -Path $tsPolicy -Name "fSingleSessionPerUser" -PropertyType DWord -Value 0 -Force | Out-Null
-          New-ItemProperty -Path $tsPolicy -Name "AVC444ModePreferred" -PropertyType DWord -Value 1 -Force | Out-Null
-          New-ItemProperty -Path $tsPolicy -Name "AVCHardwareEncodePreferred" -PropertyType DWord -Value 1 -Force | Out-Null
-          New-ItemProperty -Path $tsPolicy -Name "fAllowDesktopComposition" -PropertyType DWord -Value 1 -Force | Out-Null
-          New-ItemProperty -Path $tsPolicy -Name "fDisableAudio" -PropertyType DWord -Value 0 -Force | Out-Null
-          New-ItemProperty -Path $tsPolicy -Name "fDisableAudioCapture" -PropertyType DWord -Value 0 -Force | Out-Null
-          
+          # 3. Mở cổng Firewall
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           netsh advfirewall firewall add rule name="RDP-Allow" dir=in action=allow protocol=TCP localport=3389 | Out-Null
           
+          # 4. Tạo mật khẩu ngẫu nhiên 12 ký tự
+          $seceditFile = "$env:TEMP\secpol.inf"
+          $seceditContent = @("[Unicode]", "Unicode=yes", "[System Access]", "PasswordComplexity = 0", "MinimumPasswordLength = 0")
+          Set-Content -Path $seceditFile -Value $seceditContent -Encoding Unicode
+          $null = secedit /configure /db "$env:TEMP\secpol.sdb" /cfg $seceditFile /areas SECURITYPOLICY 2>&1
+          Remove-Item $seceditFile -Force -ErrorAction SilentlyContinue
+
+          $password = -join ((48..57) + (65..90) + (97..122) + (33..47) | Get-Random -Count 12 | % {[char]$_})
+          
+          # 5. Tạo user XyDesk
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          $null = New-LocalUser -Name "XyDesk" -Password $securePass -AccountNeverExpires -PasswordNeverExpires -ErrorAction SilentlyContinue
+          $null = Add-LocalGroupMember -Group "Administrators" -Member "XyDesk" -ErrorAction SilentlyContinue
+          $null = Add-LocalGroupMember -Group "Remote Desktop Users" -Member "XyDesk" -ErrorAction SilentlyContinue
+          
+          "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
+          
+          # Bật âm thanh
           Set-Service -Name "AudioEndpointBuilder" -StartupType Automatic
           Start-Service -Name "AudioEndpointBuilder" -ErrorAction SilentlyContinue
           Set-Service -Name "Audiosrv" -StartupType Automatic
           Start-Service -Name "Audiosrv" -ErrorAction SilentlyContinue
           Restart-Service TermService -Force
-          Write-Host "XyDesk Host Ready."
+          Write-Host "RDP is Ready."
 
-      - name: Create RDP User
+      - name: Start Pinggy Tunnel & Display Info
         shell: powershell
-        run: |
-          try {
-              $seceditFile = "$env:TEMP\secpol.inf"
-              $seceditContent = @("[Unicode]", "Unicode=yes", "[System Access]", "PasswordComplexity = 0", "MinimumPasswordLength = 0")
-              Set-Content -Path $seceditFile -Value $seceditContent -Encoding Unicode
-              $null = secedit /configure /db "$env:TEMP\secpol.sdb" /cfg $seceditFile /areas SECURITYPOLICY 2>&1
-              Remove-Item $seceditFile -Force -ErrorAction SilentlyContinue
-
-              $pin = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 10 | % {[char]$_})
-              $securePass = ConvertTo-SecureString $pin -AsPlainText -Force
-              $null = New-LocalUser -Name "XyDesk" -Password $securePass -AccountNeverExpires -PasswordNeverExpires -ErrorAction SilentlyContinue
-              $null = Add-LocalGroupMember -Group "Administrators" -Member "XyDesk" -ErrorAction SilentlyContinue
-              $null = Add-LocalGroupMember -Group "Remote Desktop Users" -Member "XyDesk" -ErrorAction SilentlyContinue
-              
-              "RDP_PIN=$pin" >> $env:GITHUB_ENV
-              Write-Host "User XyDesk created."
-          } catch { Write-Host "Warning: $_" }
-          exit 0
-
-      - name: Start Serveo Tunnel (Priority 1)
-        shell: powershell
-        timeout-minutes: 5
+        timeout-minutes: 360
         run: |
           $ErrorActionPreference = 'Continue'
-          $sshLog = "$env:TEMP\serveo.log"
-          Remove-Item $sshLog -Force -ErrorAction SilentlyContinue
+          $endTime = (Get-Date).AddMinutes(350)
           
-          Write-Host "Starting Serveo Tunnel..."
-          $cmd = "ssh -tt -o StrictHostKeyChecking=no -R 0:localhost:3389 serveo.net > `"$sshLog`" 2>&1"
-          $proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $cmd -WindowStyle Hidden -PassThru
+          $currentHost = $null
+          $currentPort = $null
+          $tunnelProc = $null
 
-          Write-Host "Waiting for Serveo..."
-          $publicHost = $null
-          $publicPort = $null
-          
-          for ($i = 1; $i -le 20; $i++) {
+          # Hàm tạo tunnel
+          function Start-Tunnel {
+              if ($script:tunnelProc -and -not $script:tunnelProc.HasExited) {
+                  Stop-Process -Id $script:tunnelProc.Id -Force -ErrorAction SilentlyContinue
+              }
+              Get-Process -Name "ssh" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
               Start-Sleep -Seconds 2
-              if (Test-Path $sshLog) {
-                  $content = Get-Content $sshLog -Raw -ErrorAction SilentlyContinue
-                  if ($content -match 'from\s+([a-zA-Z0-9\.\-]+):(\d+)') {
-                      $publicHost = $matches[1]
-                      $publicPort = $matches[2]
-                      break
-                  }
-              }
-          }
-          
-          if ($publicHost -and $publicPort) {
-              "RDP_HOST=$publicHost" >> $env:GITHUB_ENV
-              "RDP_PORT=$publicPort" >> $env:GITHUB_ENV
-              Write-Host "Tunnel Established: $publicHost on port $publicPort"
-          } else {
-              Write-Host "Serveo failed or timed out. Skipping to AnyDesk." -ForegroundColor Yellow
-          }
-          exit 0
-
-      - name: Install AnyDesk (Priority 2 - Failover)
-        shell: powershell
-        timeout-minutes: 10
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $anydeskInstaller = "$env:TEMP\AnyDesk.exe"
-          
-          Write-Host "Downloading AnyDesk..."
-          Invoke-WebRequest -Uri "https://download.anydesk.com/AnyDesk.exe" -OutFile $anydeskInstaller -UseBasicParsing
-          
-          Write-Host "Installing AnyDesk silently..."
-          Start-Process -FilePath $anydeskInstaller -ArgumentList "--install `"C:\Program Files\AnyDesk`" --silent" -Wait
-          
-          $anydeskExe = "C:\Program Files\AnyDesk\AnyDesk.exe"
-          if (-not (Test-Path $anydeskExe)) { 
-              Write-Host "AnyDesk installation failed." -ForegroundColor Red
-              exit 0 
-          }
-          
-          Write-Host "Setting AnyDesk Password..."
-          Start-Process -FilePath $anydeskExe -ArgumentList "--set-password `"$env:RDP_PIN`"" -Wait
-          Start-Sleep -Seconds 3
-          
-          Write-Host "Starting AnyDesk Service..."
-          Start-Service -Name "AnyDesk" -ErrorAction SilentlyContinue
-          Start-Sleep -Seconds 5
-
-          Write-Host "Getting AnyDesk ID (Trying CLI)..."
-          $anydeskId = $null
-          for ($i = 1; $i -le 5 -and -not $anydeskId; $i++) {
-            $idOutput = @(& $anydeskExe --get-id 2>&1)
-            foreach ($line in $idOutput) {
-              if (([string]$line).Trim() -match '^\d{9,10}$') { 
-                  $anydeskId = $matches[0]
-                  break 
-              }
-            }
-            if (-not $anydeskId) { Start-Sleep -Seconds 2 }
-          }
-
-          # CÁCH 2: NẾU CLI THẤT BẠI, CHỌC THẲNG VÀO FILE CONFIG CỦA ANYDESK
-          if (-not $anydeskId) {
-              Write-Host "CLI failed. Searching AnyDesk config files directly..."
-              $searchPaths = @(
-                  "C:\ProgramData\AnyDesk",
-                  "$env:APPDATA\AnyDesk",
-                  "C:\Windows\System32\config\systemprofile\AppData\Roaming\AnyDesk"
-              )
-              foreach ($path in $searchPaths) {
-                  if (Test-Path $path) {
-                      # Tìm file service.conf hoặc system.conf
-                      $confFiles = Get-ChildItem -Path $path -Filter "*.conf" -ErrorAction SilentlyContinue
-                      foreach ($file in $confFiles) {
-                          $content = Get-Content $file.FullName -Raw -ErrorAction SilentlyContinue
-                          if ($content -match 'ad\.anydesk\.id=(\d{9,10})') {
-                              $anydeskId = $matches[1]
-                              Write-Host "Found ID in file: $($file.FullName)"
-                              break
-                          }
+              
+              $sshLog = "$env:TEMP\pinggy.log"
+              Remove-Item $sshLog -Force -ErrorAction SilentlyContinue
+              
+              # Tạo tunnel Pinggy
+              $cmd = "ssh -tt -p 443 -o StrictHostKeyChecking=no -o ServerAliveInterval=20 -R0:localhost:3389 a.pinggy.io > `"$sshLog`" 2>&1"
+              $script:tunnelProc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $cmd -WindowStyle Hidden -PassThru
+              
+              Write-Host "Waiting for Pinggy to assign URL..."
+              for ($i = 1; $i -le 20; $i++) {
+                  Start-Sleep -Seconds 2
+                  if (Test-Path $sshLog) {
+                      $content = Get-Content $sshLog -Raw -ErrorAction SilentlyContinue
+                      if ($content -match 'tcp://([a-zA-Z0-9\-\.]+):(\d+)') {
+                          $script:currentHost = $matches[1]
+                          $script:currentPort = $matches[2]
+                          Write-Host "=================================================="
+                          Write-Host "NEW ADDRESS: $($script:currentHost):$($script:currentPort)" -ForegroundColor Green
+                          Write-Host "=================================================="
+                          return $true
                       }
                   }
-                  if ($anydeskId) { break }
               }
+              return $false
           }
-          
-          if ($anydeskId) {
-              Write-Host "AnyDesk ID obtained: $anydeskId"
-              "ANYDESK_ID=$anydeskId" >> $env:GITHUB_ENV
-          } else {
-              Write-Host "Failed to get AnyDesk ID." -ForegroundColor Red
-              "ANYDESK_ID=NOT_FOUND" >> $env:GITHUB_ENV
-          }
-          exit 0
 
-      - name: Publish Connection Details
-        shell: powershell
-        run: |
-          $anydeskStatus = if ($env:ANYDESK_ID -eq "NOT_FOUND" -or [string]::IsNullOrEmpty($env:ANYDESK_ID)) { "Failed" } else { $env:ANYDESK_ID }
-          $serveoStatus = if ([string]::IsNullOrEmpty($env:RDP_HOST)) { "Failed" } else { "$env:RDP_HOST : $env:RDP_PORT" }
-          
+          # Tạo tunnel lần đầu
+          if (-not (Start-Tunnel)) { throw "Cannot create Pinggy tunnel." }
+
+          # In bảng thông tin lần đầu
           $summary = @(
-            '## XyDesk Remote (RDP + AnyDesk)',
+            '## XyDesk Remote (RDP via Pinggy)',
             '',
-            '### Option 1: RDP via Serveo (Use quickly, may disconnect)',
-            '- **Address:** `' + $serveoStatus + '`',
+            '### Connection Details',
+            '- **Host (IP):** `' + $currentHost + '`',
+            '- **Port:** `' + $currentPort + '`',
+            '',
             '- **Username:** `XyDesk`',
-            '- **Password:** `' + $env:RDP_PIN + '`',
+            '- **Password:** `' + $env:RDP_PASSWORD + '`',
             '',
-            '### Option 2: AnyDesk (Stable connection)',
-            '- **AnyDesk ID:** `' + $anydeskStatus + '`',
-            '- **Password:** `' + $env:RDP_PIN + '`',
+            '**Huong dan ket noi:**',
+            '1. Mo app RDP (mstsc tren PC, aRDP tren Android).',
+            '2. O o Host/PC Name, nhap Host o tren.',
+            '3. O o Port, nhap Port o tren.',
+            '4. Nhap Username va Password de ket noi.',
             '',
-            '**Instructions:**',
-            '1. If Serveo is active, you can use RDP immediately.',
-            '2. Since Serveo is unstable, we recommend downloading the AnyDesk app and using Option 2 for a stable connection.',
-            '3. AnyDesk will not disconnect you.'
+            '> ⚠️ Pinggy mien phi co the tu dong doi Port sau 60 phut.',
+            '> Neu ban bi mat ket noi, hay quay lai trang nay de xem thong tin moi nhat trong phan Log.'
           )
           $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+          Write-Host "Summary published to GitHub Actions."
 
-      - name: Keep session alive
-        shell: powershell
-        run: |
-          while ($true) {
-              Write-Host "[$(Get-Date)] Session Active..."
-              Start-Sleep -Seconds 300
+          # Vòng lặp kiểm tra kết nối
+          while ((Get-Date) -lt $endTime) {
+              Start-Sleep -Seconds 30
+              
+              # Nếu SSH chết, tạo lại
+              if (-not $script:tunnelProc -or $script:tunnelProc.HasExited) {
+                  Write-Host "Tunnel died. Recreating..." -ForegroundColor Yellow
+                  if (Start-Tunnel) {
+                      Write-Host "NEW ADDRESS GENERATED: $currentHost : $currentPort" -ForegroundColor Cyan
+                      Write-Host "Please check the logs if you need to reconnect." -ForegroundColor Cyan
+                  }
+              } else {
+                  # Kiểm tra xem có dòng thông báo nào mới không
+                  $content = Get-Content "$env:TEMP\pinggy.log" -Raw -ErrorAction SilentlyContinue
+                  if ($content -match 'tcp://([a-zA-Z0-9\-\.]+):(\d+)') {
+                      $newHost = $matches[1]
+                      $newPort = $matches[2]
+                      if ($newHost -ne $currentHost -or $newPort -ne $currentPort) {
+                          $currentHost = $newHost
+                          $currentPort = $newPort
+                          Write-Host "=================================================="
+                          Write-Host "NEW ADDRESS: $currentHost : $currentPort" -ForegroundColor Green
+                          Write-Host "=================================================="
+                      }
+                  }
+              }
           }
