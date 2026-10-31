@@ -16,8 +16,15 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = "SilentlyContinue"
+          # 1. Tắt NLA (Network Level Authentication) để tránh lỗi Logon failed trên các app RDP cũ
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+          
+          # 2. Bật RDP
           Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0
           Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fSingleSessionPerUser" -Value 0
+          
+          # 3. Kích hoạt các tối ưu XyDesk
           $tsPolicy = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
           if (!(Test-Path $tsPolicy)) { New-Item -Path $tsPolicy -Force | Out-Null }
           New-ItemProperty -Path $tsPolicy -Name "fDenyTSConnections" -PropertyType DWord -Value 0 -Force | Out-Null
@@ -33,17 +40,10 @@ jobs:
           New-ItemProperty -Path $tsPolicy -Name "fDisableAudioCapture" -PropertyType DWord -Value 0 -Force | Out-Null
           New-ItemProperty -Path $tsPolicy -Name "fDisableCam" -PropertyType DWord -Value 0 -Force | Out-Null
           New-ItemProperty -Path $tsPolicy -Name "DWMFRAMEINTERVAL" -PropertyType DWord -Value 16 -Force | Out-Null
-          New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name "fDisableAudio" -PropertyType DWord -Value 0 -Force | Out-Null
-          New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name "fDisableAudioCapture" -PropertyType DWord -Value 0 -Force | Out-Null
-          New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "fDisableAudio" -PropertyType DWord -Value 0 -Force | Out-Null
-          New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "fDisableAudioCapture" -PropertyType DWord -Value 0 -Force | Out-Null
-          New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations" -Name "DWMFRAMEINTERVAL" -PropertyType DWord -Value 16 -Force | Out-Null
           
           foreach ($c in @(
               "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone",
-              "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone\NonPackaged",
-              "HKCU:\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone",
-              "HKCU:\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone\NonPackaged"
+              "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone\NonPackaged"
           )) {
               if (-not (Test-Path $c)) { New-Item -Path $c -Force | Out-Null }
               Set-ItemProperty -Path $c -Name "Value" -Value "Allow" -Force | Out-Null
@@ -52,35 +52,40 @@ jobs:
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           netsh advfirewall firewall add rule name="XyDesk Remote RDP TCP" dir=in action=allow protocol=TCP localport=3389 | Out-Null
           netsh advfirewall firewall add rule name="XyDesk Remote RDP UDP" dir=in action=allow protocol=UDP localport=3389 | Out-Null
-          netsh advfirewall firewall add rule name="XyDesk Remote QUIC UDP" dir=in action=allow protocol=UDP localport=4433 | Out-Null
           
           Set-Service -Name "AudioEndpointBuilder" -StartupType Automatic
           Start-Service -Name "AudioEndpointBuilder"
           Set-Service -Name "Audiosrv" -StartupType Automatic
           Start-Service -Name "Audiosrv"
-          Start-Service TermService
+          Restart-Service TermService -Force
           
-          Write-Host "XyDesk Host Ready (120Hz GPU AVC444 + ClearType + On-Mic AudioCapture + QUIC UDP 4433)"
+          Write-Host "XyDesk Host Ready (NLA Disabled)"
 
       - name: Create RDP User (PIN)
         shell: powershell
         run: |
           try {
+              # Tắt chính sách mật khẩu phức tạp
               $seceditFile = "$env:TEMP\secpol.inf"
               $seceditContent = @("[Unicode]", "Unicode=yes", "[System Access]", "PasswordComplexity = 0", "MinimumPasswordLength = 0")
               Set-Content -Path $seceditFile -Value $seceditContent -Encoding Unicode
               $null = secedit /configure /db "$env:TEMP\secpol.sdb" /cfg $seceditFile /areas SECURITYPOLICY 2>&1
               Remove-Item $seceditFile -Force -ErrorAction SilentlyContinue
 
+              # Tạo PIN ngẫu nhiên
               $pin = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 10 | % {[char]$_})
               
+              # Tạo user và phân quyền
               $securePass = ConvertTo-SecureString $pin -AsPlainText -Force
-              $null = New-LocalUser -Name "XyDesk" -Password $securePass -AccountNeverExpires -ErrorAction SilentlyContinue
+              $null = New-LocalUser -Name "XyDesk" -Password $securePass -AccountNeverExpires -PasswordNeverExpires -ErrorAction SilentlyContinue
               $null = Add-LocalGroupMember -Group "Administrators" -Member "XyDesk" -ErrorAction SilentlyContinue
               $null = Add-LocalGroupMember -Group "Remote Desktop Users" -Member "XyDesk" -ErrorAction SilentlyContinue
               
+              # Ép buộc đổi mật khẩu để đồng bộ
+              net user XyDesk $pin /y | Out-Null
+              
               "RDP_PIN=$pin" >> $env:GITHUB_ENV
-              Write-Host "User XyDesk created with PIN."
+              Write-Host "User XyDesk created and password forced."
           } catch {
               Write-Host "Warning: $_"
           }
@@ -95,20 +100,15 @@ jobs:
           Remove-Item $sshLog -Force -ErrorAction SilentlyContinue
           
           Write-Host "Starting Serveo Tunnel..."
-          $cmd = "ssh -tt -o StrictHostKeyChecking=no -R 0:localhost:3389 serveo.net > `"$sshLog`" 2>&1"
+          $cmd = "ssh -tt -o StrictHostKeyChecking=no -o ServerAliveInterval=10 -R 0:localhost:3389 serveo.net > `"$sshLog`" 2>&1"
           $proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $cmd -WindowStyle Hidden -PassThru
 
-          Write-Host "Waiting for Serveo to initialize (max 60s)..."
+          Write-Host "Waiting for Serveo..."
           $publicHost = $null
           $publicPort = $null
           
           for ($i = 1; $i -le 30; $i++) {
               Start-Sleep -Seconds 2
-              
-              if ($proc.HasExited) {
-                  Write-Host "SSH process exited prematurely."
-                  break
-              }
               
               if (Test-Path $sshLog) {
                   $content = Get-Content $sshLog -Raw -ErrorAction SilentlyContinue
@@ -125,17 +125,14 @@ jobs:
               "RDP_PORT=$publicPort" >> $env:GITHUB_ENV
               Write-Host "Tunnel Established: $publicHost on port $publicPort"
           } else {
-              Write-Host "Failed to get Serveo address. Log output:"
               if (Test-Path $sshLog) { Get-Content $sshLog }
-              if ($proc) { Stop-Process -Id $proc.Id -Force }
-              throw "Tunnel failed. Please check the log above."
+              throw "Tunnel failed."
           }
           exit 0
 
       - name: Publish Connection Details (ID & PIN)
         shell: powershell
         run: |
-          # Sử dụng mảng string kết hợp nối chuỗi để tránh hoàn toàn lỗi cú pháp
           $summary = @(
             '## 🖥️ XyDesk Remote (RDP + Serveo)',
             '',
@@ -145,13 +142,13 @@ jobs:
             '- **Username:** `XyDesk`',
             '- **PIN (Password):** `' + $env:RDP_PIN + '`',
             '',
-            '**Huong dan ket noi:**',
-            '1. Mo app RDP (mstsc tren PC, aRDP/Microsoft Remote Desktop tren dien thoai).',
-            '2. O o Host/PC Name, nhap ID o tren.',
-            '3. O o Port, nhap Port o tren.',
-            '4. Dien Username va PIN de ket noi.',
+            '**Huong dan:**',
+            '1. Mo app XyDesk Remote.',
+            '2. Nhap ID va Port.',
+            '3. Nhap Username: XyDesk',
+            '4. Nhap PIN (Password).',
             '',
-            '> ⚠️ **Luu y:** Serveo mien phi co the ngat ket noi neu khong co traffic trong thoi gian dai.'
+            '> ⚠️ **Luu y:** Neu app XyDesk hoi ve Certificate, hay chon "Accept" hoac "Trust" de tiep tuc.'
           )
           $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
 
@@ -159,6 +156,5 @@ jobs:
         shell: powershell
         run: |
           while ($true) {
-              Write-Host "[$(Get-Date)] XyDesk Session Active..."
               Start-Sleep -Seconds 300
           }
