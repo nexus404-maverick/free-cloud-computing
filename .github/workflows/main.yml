@@ -73,7 +73,6 @@ jobs:
               $sshLog = "$env:TEMP\localhost_run.log"
               Remove-Item $sshLog -Force -ErrorAction SilentlyContinue
               
-              # Sử dụng localhost.run thay vì Pinggy
               $cmd = "ssh -T -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -R 0:localhost:3389 nokey@localhost.run > `"$sshLog`" 2>&1"
               $script:tunnelProc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $cmd -WindowStyle Hidden -PassThru
               
@@ -82,10 +81,9 @@ jobs:
                   Start-Sleep -Seconds 2
                   if (Test-Path $sshLog) {
                       $content = Get-Content $sshLog -Raw -ErrorAction SilentlyContinue
-                      # localhost.run cấp link dạng: xxxx.lhr.life
                       if ($content -match '([a-zA-Z0-9\-]+\.lhr\.life)') {
                           $script:currentHost = $matches[1]
-                          $script:currentPort = "80" # localhost.run tự map port 80 tới port đích
+                          $script:currentPort = "80"
                           Write-Host "=================================================="
                           Write-Host "NEW ADDRESS: $($script:currentHost)" -ForegroundColor Green
                           Write-Host "=================================================="
@@ -101,23 +99,24 @@ jobs:
               exit 1 
           }
 
+          # KHONG DUNG TIENG VIET CO DAU DE TRANH LOI FONT CHU
           $summary = @(
             '## XyDesk Remote (RDP via localhost.run)',
             '',
             '### Connection Details',
             '- **Host (IP):** `' + $currentHost + '`',
-            '- **Port:** `3389` (Hoặc để trống nếu app tự nhận)',
+            '- **Port:** `3389` (or leave blank if app auto-detects)',
             '',
             '- **Username:** `XyDesk`',
             '- **Password:** `' + $env:RDP_PASSWORD + '`',
             '',
             '**Huong dan ket noi:**',
-            '1. Mo app RDP (mstsc tren PC, aRDP tren Android).',
-            '2. O o Host/PC Name, nhap Host o tren.',
-            '3. Nhap Username va Password de ket noi.',
+            '1. Open RDP app (mstsc on PC, aRDP on Android).',
+            '2. In Host/PC Name, enter the Host above.',
+            '3. Enter Username and Password to connect.',
             '',
-            '> ⚠️ localhost.run mien phi co the tu dong doi Host sau vai gio.',
-            '> Neu ban bi mat ket noi, hay quay lai trang nay de xem thong tin moi nhat trong phan Log.'
+            '> ⚠️ localhost.run free tier may change Host after a few hours.',
+            '> If you get disconnected, come back to this page to see the latest info in the Log.'
           )
           $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
           Write-Host "Summary published to GitHub Actions."
