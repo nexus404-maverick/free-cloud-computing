@@ -1,4 +1,4 @@
-name: XyDesk Remote (RDP via localhost.run)
+name: XyDesk Remote (RDP via Bore)
 
 on:
   workflow_dispatch:
@@ -52,14 +52,14 @@ jobs:
           }
           exit 0
 
-      - name: Start localhost.run Tunnel & Display Info
+      - name: Start Bore Tunnel & Display Info
         shell: powershell
         timeout-minutes: 360
         run: |
           $ErrorActionPreference = 'Continue'
           $endTime = (Get-Date).AddMinutes(350)
           
-          $currentHost = $null
+          $currentHost = "bore.pub"
           $currentPort = $null
           $tunnelProc = $null
 
@@ -67,25 +67,30 @@ jobs:
               if ($script:tunnelProc -and -not $script:tunnelProc.HasExited) {
                   Stop-Process -Id $script:tunnelProc.Id -Force -ErrorAction SilentlyContinue
               }
-              Get-Process -Name "ssh" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
               Start-Sleep -Seconds 2
               
-              $sshLog = "$env:TEMP\localhost_run.log"
-              Remove-Item $sshLog -Force -ErrorAction SilentlyContinue
+              $boreLog = "$env:TEMP\bore.log"
+              Remove-Item $boreLog -Force -ErrorAction SilentlyContinue
               
-              $cmd = "ssh -T -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -R 0:localhost:3389 nokey@localhost.run > `"$sshLog`" 2>&1"
-              $script:tunnelProc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $cmd -WindowStyle Hidden -PassThru
+              # Tải Bore
+              if (-not (Test-Path "$env:TEMP\bore.exe")) {
+                  Invoke-WebRequest -Uri "https://github.com/ekzhang/bore/releases/download/v0.5.3/bore-v0.5.3-x86_64-pc-windows-msvc.zip" -OutFile "$env:TEMP\bore.zip" -UseBasicParsing
+                  Expand-Archive -Path "$env:TEMP\bore.zip" -DestinationPath "$env:TEMP\bore_extract" -Force
+                  Move-Item "$env:TEMP\bore_extract\bore.exe" "$env:TEMP\bore.exe" -Force
+              }
+
+              Write-Host "Starting Bore tunnel..."
+              $script:tunnelProc = Start-Process -FilePath "$env:TEMP\bore.exe" -ArgumentList "local 3389 --to bore.pub" -WindowStyle Hidden -RedirectStandardOutput $boreLog -PassThru
               
-              Write-Host "Waiting for localhost.run to assign URL..."
+              Write-Host "Waiting for Bore to assign port..."
               for ($i = 1; $i -le 30; $i++) {
                   Start-Sleep -Seconds 2
-                  if (Test-Path $sshLog) {
-                      $content = Get-Content $sshLog -Raw -ErrorAction SilentlyContinue
-                      if ($content -match '([a-zA-Z0-9\-]+\.lhr\.life)') {
-                          $script:currentHost = $matches[1]
-                          $script:currentPort = "80"
+                  if (Test-Path $boreLog) {
+                      $content = Get-Content $boreLog -Raw -ErrorAction SilentlyContinue
+                      if ($content -match 'listening at (bore\.pub:\d+)') {
+                          $script:currentPort = $matches[1] -replace 'bore\.pub:', ''
                           Write-Host "=================================================="
-                          Write-Host "NEW ADDRESS: $($script:currentHost)" -ForegroundColor Green
+                          Write-Host "NEW ADDRESS: $($script:currentHost):$($script:currentPort)" -ForegroundColor Green
                           Write-Host "=================================================="
                           return $true
                       }
@@ -95,17 +100,17 @@ jobs:
           }
 
           if (-not (Start-Tunnel)) { 
-              Write-Host "Cannot create localhost.run tunnel." -ForegroundColor Red
+              Write-Host "Cannot create Bore tunnel. Please restart the workflow." -ForegroundColor Red
               exit 1 
           }
 
           # KHONG DUNG TIENG VIET CO DAU DE TRANH LOI FONT CHU
           $summary = @(
-            '## XyDesk Remote (RDP via localhost.run)',
+            '## XyDesk Remote (RDP via Bore.pub)',
             '',
             '### Connection Details',
             '- **Host (IP):** `' + $currentHost + '`',
-            '- **Port:** `3389` (or leave blank if app auto-detects)',
+            '- **Port:** `' + $currentPort + '`',
             '',
             '- **Username:** `XyDesk`',
             '- **Password:** `' + $env:RDP_PASSWORD + '`',
@@ -113,10 +118,10 @@ jobs:
             '**Huong dan ket noi:**',
             '1. Open RDP app (mstsc on PC, aRDP on Android).',
             '2. In Host/PC Name, enter the Host above.',
-            '3. Enter Username and Password to connect.',
+            '3. In Port, enter the Port above.',
+            '4. Enter Username and Password to connect.',
             '',
-            '> ⚠️ localhost.run free tier may change Host after a few hours.',
-            '> If you get disconnected, come back to this page to see the latest info in the Log.'
+            '> ⚠️ Bore is a free community tunnel. If the connection drops, please restart the workflow.'
           )
           $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
           Write-Host "Summary published to GitHub Actions."
@@ -127,19 +132,7 @@ jobs:
               if (-not $script:tunnelProc -or $script:tunnelProc.HasExited) {
                   Write-Host "Tunnel died. Recreating..." -ForegroundColor Yellow
                   if (Start-Tunnel) {
-                      Write-Host "NEW ADDRESS GENERATED: $currentHost" -ForegroundColor Cyan
-                      Write-Host "Please check the logs if you need to reconnect." -ForegroundColor Cyan
-                  }
-              } else {
-                  $content = Get-Content "$env:TEMP\localhost_run.log" -Raw -ErrorAction SilentlyContinue
-                  if ($content -match '([a-zA-Z0-9\-]+\.lhr\.life)') {
-                      $newHost = $matches[1]
-                      if ($newHost -ne $currentHost) {
-                          $currentHost = $newHost
-                          Write-Host "=================================================="
-                          Write-Host "NEW ADDRESS: $currentHost" -ForegroundColor Green
-                          Write-Host "=================================================="
-                      }
+                      Write-Host "NEW ADDRESS GENERATED: $currentHost : $currentPort" -ForegroundColor Cyan
                   }
               }
           }
